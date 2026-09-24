@@ -1,0 +1,14 @@
+﻿# Allowlist: only app files may ever be committed. Health data, backups, exports and team notes are blocked.
+*
+!.gitignore
+!.nojekyll
+!index.html
+!sw.js
+!manifest.webmanifest
+!css/
+!css/*.css
+!js/
+!js/*.js
+!icons/
+!icons/*.svg
+!icons/*.png

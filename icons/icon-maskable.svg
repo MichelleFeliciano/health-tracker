@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Health Log">
+  <rect width="512" height="512" fill="#1d4ed8"/>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
+    <rect x="136" y="112" width="240" height="296" rx="28" fill="#ffffff"/>
+    <rect x="200" y="88" width="112" height="56" rx="16" fill="#dbeafe" stroke="#1d4ed8" stroke-width="12"/>
+    <path d="M172 272h44l24-56 32 104 24-48h44" fill="none" stroke="#1d4ed8" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
