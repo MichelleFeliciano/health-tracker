@@ -2,9 +2,12 @@
  * Glucose unit, user-set glucose range, backup export/restore (A-002 §2 items 14–15),
  * "last backup" nudge, storage persistence, Apple Health import slot, about/not-medical-advice.
  *
- * Glucose range rule (decisions.md 2026-09-23, R-003 §4): blank by default; the app never
- * labels a reading high/low/abnormal. If the user sets a range, a reading outside it shows
- * one neutral notice plus a fixed emergency line (TEXT below). No condition is named.
+ * Glucose range rule (decisions.md 2026-09-23 + amendment, R-003 §4, A-003): the range is
+ * blank by default with no suggested values; the app never labels a reading high/low/abnormal.
+ * The out-of-range notice is OPT-IN and OFF by default (settings.rangeNoticeOn): only when the
+ * user ticks the checkbox AND has entered their own range does a reading outside it show one
+ * neutral notice plus a fixed emergency line (TEXT below), once, next to the reading. No
+ * condition is named and there are no push alerts. Saving a range never turns the notice on.
  * Exposes window.HT.settings.
  */
 (function (HT) {
@@ -136,11 +139,37 @@
       var lowId = A.nextId('lo'), hiId = A.nextId('hi');
       var lowIn = el('input', { type: 'text', inputmode: 'decimal', id: lowId, autocomplete: 'off' });
       var hiIn = el('input', { type: 'text', inputmode: 'decimal', id: hiId, autocomplete: 'off' });
-      lowIn.value = s.rangeLowMgdl == null ? '' : U.formatMgdlIn(s.rangeLowMgdl, unit);
-      hiIn.value = s.rangeHighMgdl == null ? '' : U.formatMgdlIn(s.rangeHighMgdl, unit);
+      // T001-06: remember the text as shown, so an untouched field keeps its exact stored value.
+      var origLow = s.rangeLowMgdl == null ? '' : U.formatMgdlIn(s.rangeLowMgdl, unit);
+      var origHigh = s.rangeHighMgdl == null ? '' : U.formatMgdlIn(s.rangeHighMgdl, unit);
+      lowIn.value = origLow;
+      hiIn.value = origHigh;
       var err = el('div', { class: 'field-error', role: 'alert' });
       rangeCard.appendChild(el('h2', { id: 'range-h', style: 'margin-top:0', text: 'My glucose range (optional)' }));
       rangeCard.appendChild(el('p', { class: 'field-hint', text: 'Only fill this in if you and your care team chose a range. Leave it blank and the app won’t compare readings to anything.' }));
+
+      // T001-13: explicit opt-in, off by default. Saved as soon as it is ticked or unticked.
+      var optId = A.nextId('rn'), optHintId = optId + '-h';
+      var optIn = el('input', { type: 'checkbox', id: optId, checked: s.rangeNoticeOn === true, 'aria-describedby': optHintId });
+      var optHint = el('p', { class: 'field-hint', id: optHintId });
+      function drawOptHint() {
+        var hasRange = s.rangeLowMgdl != null || s.rangeHighMgdl != null;
+        optHint.textContent = 'Optional, and off unless you turn it on. When it is on, a short note appears next to a reading that is outside the range you entered. ' +
+          (s.rangeNoticeOn && !hasRange ? 'Enter your range below; until then nothing is compared.' : 'The app never suggests a range.');
+      }
+      optIn.addEventListener('change', function () {
+        var prevOn = s.rangeNoticeOn;
+        s.rangeNoticeOn = optIn.checked === true;
+        drawOptHint();
+        save(s.rangeNoticeOn ? 'Range note turned on' : 'Range note turned off').catch(function () {
+          s.rangeNoticeOn = prevOn; optIn.checked = prevOn === true; drawOptHint();
+        });
+      });
+      drawOptHint();
+      rangeCard.appendChild(el('div', { class: 'check' }, [
+        optIn, el('label', { for: optId, text: 'Show a note when a reading is outside my range' })
+      ]));
+      rangeCard.appendChild(optHint);
       rangeCard.appendChild(el('div', { class: 'row grow' }, [
         el('div', null, [el('label', { for: lowId, text: 'Lowest, in ' + unit }), lowIn]),
         el('div', null, [el('label', { for: hiId, text: 'Highest, in ' + unit }), hiIn])
@@ -153,12 +182,16 @@
           if (!lo.ok) { err.textContent = 'Lowest: ' + lo.error; lowIn.focus(); return; }
           if (!hi.ok) { err.textContent = 'Highest: ' + hi.error; hiIn.focus(); return; }
           if (lo.value !== null && hi.value !== null && lo.value >= hi.value) { err.textContent = 'The lowest number must be smaller than the highest.'; lowIn.focus(); return; }
-          s.rangeLowMgdl = lo.value === null ? null : U.toMgdlExact(lo.value, unit);
-          s.rangeHighMgdl = hi.value === null ? null : U.toMgdlExact(hi.value, unit);
-          save('Range saved').catch(function () {});
+          // T001-06: an unchanged field keeps the exact stored bound (no re-rounding drift
+          // after a unit switch); only an edited field is re-parsed.
+          s.rangeLowMgdl = lowIn.value.trim() === origLow ? s.rangeLowMgdl : (lo.value === null ? null : U.toMgdlExact(lo.value, unit));
+          s.rangeHighMgdl = hiIn.value.trim() === origHigh ? s.rangeHighMgdl : (hi.value === null ? null : U.toMgdlExact(hi.value, unit));
+          // Saving a range never turns the note on (T001-13); rangeNoticeOn is left as it is.
+          save('Range saved').then(drawRange, function () {});
         } }),
         el('button', { type: 'button', text: 'Clear range', onclick: function () {
-          s.rangeLowMgdl = null; s.rangeHighMgdl = null;
+          // Clearing the range also switches the note off (T001-13 fix direction).
+          s.rangeLowMgdl = null; s.rangeHighMgdl = null; s.rangeNoticeOn = false;
           save('Range cleared').then(drawRange, function () {});
         } })
       ]));
@@ -204,13 +237,27 @@
       if (!f) { result.appendChild(el('p', { class: 'field-error', text: 'Choose a backup file first.' })); fileIn.focus(); return; }
       if (f.size > MAX_BACKUP_BYTES) { result.appendChild(el('p', { class: 'field-error', text: 'That file is too large to be a backup from this app.' })); return; }
       var mode = mReplace.checked ? 'replace' : 'merge';
-      if (mode === 'replace' && !window.confirm('Replace all: this erases every entry on this device and loads only the backup file. Continue?')) return;
       restoreBtn.disabled = true;
       readFileText(f).then(function (text) {
         var obj;
-        try { obj = JSON.parse(text.replace(/^﻿/, '')); } catch (e) { return { ok: false, error: 'The file isn’t valid JSON, so it can’t be a backup.' }; }
+        try { obj = JSON.parse(text.replace(/^\uFEFF/, '')); } catch (e) { return { ok: false, error: 'The file isn’t valid JSON, so it can’t be a backup.' }; }
+        if (mode === 'replace') {
+          // T001-01: read and check the file BEFORE asking, so the confirm can show counts,
+          // and refuse outright when nothing in it is readable (db.importBackup refuses too).
+          var prep = HT.db.prepareBackup(obj);
+          if (!prep.ok) return prep;
+          if (!prep.records) return { ok: false, error: 'This backup has no readable entries, so nothing was changed.' };
+          var q = 'Replace all: this erases every entry on this device and loads only the backup file (' +
+            prep.records + (prep.records === 1 ? ' readable record' : ' readable records') + ').';
+          if (prep.skipped) {
+            q += '\n\n' + prep.skipped + (prep.skipped === 1 ? ' record in the file is' : ' records in the file are') +
+              ' unreadable or duplicated and will NOT be restored.';
+          }
+          if (!window.confirm(q + '\n\nContinue?')) return { ok: false, cancelled: true };
+        }
         return HT.db.importBackup(obj, mode);
       }).then(function (r) {
+        if (r.cancelled) return;
         if (!r.ok) { result.appendChild(el('p', { class: 'field-error', text: r.error })); return; }
         var c = r.counts;
         var msg = r.mode === 'replace'

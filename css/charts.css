@@ -1,0 +1,98 @@
+/* Health Tracker — charts.css
+ * Trends charts, pattern cards, the doctor summary and its print stylesheet.
+ * Uses the colour tokens from css/app.css (light + dark). No web fonts, no remote assets.
+ * Colour is never the only signal: partial nights are hatched AND labelled, the reference
+ * line is dashed AND labelled, and every chart has a text summary and a data table.
+ */
+:root {
+  --chart-bar: #1d4ed8;        /* same as --accent in light: 6.7:1 on white */
+  --chart-line: #1d4ed8;
+  --chart-grid: #d1d5db;
+  --chart-axis: #6b7280;
+  --chart-tick: #374151;
+  --chart-ref: #374151;
+  --chart-hatch-bg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chart-bar: #93c5fd;
+    --chart-line: #93c5fd;
+    --chart-grid: #374151;
+    --chart-axis: #9ca3af;
+    --chart-tick: #d1d5db;
+    --chart-ref: #e5e7eb;
+    --chart-hatch-bg: #161b26;
+  }
+}
+
+/* ---------- range picker ---------- */
+.range-picker { margin: 8px 0 4px; }
+.range-picker legend { font-weight: 700; margin-bottom: 6px; }
+.range-picker .seg .choice { flex: 1 1 80px; }
+.range-picker .choice span { white-space: nowrap; padding: 0 6px; }
+
+/* ---------- chart cards ---------- */
+.chart-card h2 { margin-top: 0; }
+.chart-summary { font-weight: 600; }
+.chart { margin: 8px 0; overflow: hidden; }
+.chart-svg { display: block; max-width: 100%; height: auto; }
+.chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-axis { stroke: var(--chart-axis); stroke-width: 1; }
+.chart-tick { fill: var(--chart-tick); font-size: 12px; font-family: inherit; }
+.chart-bar { fill: var(--chart-bar); }
+.chart-bar-partial { stroke: var(--chart-bar); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.chart-hatch-bg { fill: var(--chart-hatch-bg); }
+.chart-hatch-line { stroke: var(--chart-bar); stroke-width: 3; }
+.chart-line { fill: none; stroke: var(--chart-line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-dot { fill: var(--chart-line); }
+.chart-ref { stroke: var(--chart-ref); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.chart-ref-label { fill: var(--chart-ref); font-size: 12px; font-weight: 600; font-family: inherit; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+
+.chart-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.88rem; color: var(--muted); }
+.chart-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { display: inline-block; width: 16px; height: 12px; border-radius: 2px; flex: 0 0 auto; }
+.sw-bar { background: var(--chart-bar); }
+.sw-partial {
+  border: 1.5px dashed var(--chart-bar);
+  background: repeating-linear-gradient(45deg, var(--chart-bar) 0 2px, transparent 2px 5px);
+}
+.sw-ref { height: 0; border-top: 2px dashed var(--chart-ref); border-radius: 0; }
+.sw-line { height: 0; border-top: 3px solid var(--chart-line); border-radius: 0; }
+
+/* ---------- data tables ---------- */
+.chart-data summary { cursor: pointer; min-height: var(--tap, 44px); display: flex; align-items: center; font-weight: 600; color: var(--accent); }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.data-table { border-collapse: collapse; width: 100%; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+.data-table caption { text-align: left; font-weight: 700; padding: 6px 0; }
+.data-table th, .data-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--surface-2); vertical-align: top; }
+.data-table thead th { border-bottom: 2px solid var(--border); }
+.data-table tbody th { font-weight: 600; white-space: nowrap; }
+
+/* ---------- patterns ---------- */
+.pattern-list { list-style: none; margin: 0; padding: 0; }
+.pattern-card h3 { margin-top: 0; }
+.pattern-card details summary { cursor: pointer; min-height: var(--tap, 44px); display: flex; align-items: center; color: var(--accent); font-weight: 600; }
+
+/* ---------- summary ---------- */
+.summary-controls { margin: 8px 0; }
+.summary-controls .row { margin-bottom: 8px; }
+.summary-body h2 { margin-top: 8px; }
+.summary-note { margin-top: 16px; }
+
+/* ---------- print (doctor summary) ---------- */
+@media print {
+  :root, :root * { --chart-bar: #000; --chart-line: #000; }
+  html.printing-summary .app-header,
+  html.printing-summary .tabbar,
+  html.printing-summary .trends,
+  .no-print { display: none !important; }
+  html.printing-summary body { background: #fff; color: #000; font-size: 11pt; padding: 0; }
+  html.printing-summary main { max-width: none; padding: 0; }
+  .summary-body { color: #000; }
+  .summary-body .data-table { font-size: 10pt; }
+  .summary-body .data-table th, .summary-body .data-table td { border: 1px solid #555; }
+  .summary-body h2, .summary-body h3 { break-after: avoid; page-break-after: avoid; }
+  .summary-body .table-wrap { overflow: visible; }
+  .summary-body tr { break-inside: avoid; page-break-inside: avoid; }
+  .summary-body .disclaimer { color: #000; border-top: 1px solid #555; }
+}

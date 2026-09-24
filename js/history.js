@@ -43,18 +43,31 @@
 
     function tagLabel(t) { return (HT.today && HT.today.TAG_LABELS[t]) || t; }
 
+    function hardToTell(l, key) { return Array.isArray(l.hardToTell) && l.hardToTell.indexOf(key) >= 0; }
+
+    // T001-10: "Hard to tell" is an answer, so it is listed ("Mood: hard to tell").
     function summary(d) {
       var parts = [];
       var l = d.log;
       if (l) {
         (HT.today ? HT.today.METRICS : []).forEach(function (m) {
           if (typeof l[m.key] === 'number') parts.push(m.name + ' ' + l[m.key]);
+          else if (hardToTell(l, m.key)) parts.push(m.name + ': hard to tell');
         });
       }
       if (d.meals.length) parts.push(d.meals.length + (d.meals.length === 1 ? ' meal' : ' meals'));
       if (l && l.tags && l.tags.length) parts.push(l.tags.map(tagLabel).join(', '));
       if (l && l.notes) parts.push('has notes');
       return parts.length ? parts.join(' · ') : 'Nothing filled in';
+    }
+
+    /** A day with nothing left in it (everything cleared, no meals) is not listed. */
+    function isEmptyDay(d) {
+      if (d.meals.length) return false;
+      var l = d.log;
+      if (!l) return true;
+      if (l.notes || (l.tags && l.tags.length) || (l.hardToTell && l.hardToTell.length)) return false;
+      return !(HT.db.RATINGS || []).some(function (k) { return typeof l[k] === 'number'; });
     }
 
     function matches(d, q) {
@@ -104,7 +117,8 @@
         if (!byDate[m.date]) byDate[m.date] = { date: m.date, log: null, meals: [] };
         byDate[m.date].meals.push(m);
       });
-      days = Object.keys(byDate).sort().reverse().map(function (k) { return byDate[k]; });
+      days = Object.keys(byDate).sort().reverse().map(function (k) { return byDate[k]; })
+        .filter(function (d) { return !isEmptyDay(d); });
       draw();
     }).catch(function () {
       if (!alive) return;

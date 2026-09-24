@@ -82,7 +82,10 @@
     if (off !== 'Z') {
       var sign = off[0] === '-' ? -1 : 1;
       var digits = off.slice(1).replace(':', '');
-      var offMin = (+digits.slice(0, 2)) * 60 + (+digits.slice(2, 4));
+      var offH = +digits.slice(0, 2), offM = +digits.slice(2, 4);
+      // T001-07: real UTC offsets run from -12:00 to +14:00, minutes 00–59.
+      if (offH > 14 || offM > 59 || (offH === 14 && offM > 0)) return NaN;
+      var offMin = offH * 60 + offM;
       ms -= sign * offMin * 60000;
     }
     return ms;

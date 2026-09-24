@@ -65,6 +65,9 @@
   // ---------- router ----------
   var cleanup = null;
   var firstRoute = true;
+  // T001-03: the local date the Today screen was rendered for (null when not on Today).
+  var shownTodayDate = null;
+  var newDayBanner = null;
 
   function parseHash() {
     var h = (location.hash || '').replace(/^#\/?/, '');
@@ -95,8 +98,10 @@
     if (typeof cleanup === 'function') { try { cleanup(); } catch (e) { /* ignore */ } }
     cleanup = null;
     main.textContent = '';
+    newDayBanner = null;
 
     var today = HT.dates.todayLocal();
+    shownTodayDate = r.tab === 'today' ? today : null;
     var activeTab = r.tab === 'day' ? (r.date === today ? 'today' : 'history') : r.tab;
     Array.prototype.forEach.call(document.querySelectorAll('.tabbar a'), function (a) {
       if (a.getAttribute('data-tab') === activeTab) a.setAttribute('aria-current', 'page');
@@ -137,6 +142,45 @@
 
   function go(hash) {
     if (location.hash === hash) route(); else location.hash = hash;
+  }
+
+  // ---------- midnight rollover (T001-03) ----------
+  // The Today screen captures its date when it renders. If the app was left open or
+  // suspended past midnight, show the new day when the user comes back (the old screen's
+  // cleanup flushes any pending edit into the day it belongs to). While the page stays
+  // visible across midnight we don't switch under the user's fingers; we offer a banner.
+  function dayChanged() {
+    return shownTodayDate !== null && shownTodayDate !== HT.dates.todayLocal();
+  }
+  function onReturn() {
+    if (document.visibilityState === 'hidden') return;
+    if (dayChanged()) route();
+  }
+  function offerNewDay() {
+    if (document.visibilityState === 'hidden' || !dayChanged() || newDayBanner) return;
+    var main = document.getElementById('main');
+    if (!main) return;
+    newDayBanner = el('div', { class: 'banner', role: 'status' }, [
+      el('p', { style: 'margin:0 0 6px', text: 'It\u2019s a new day. This screen still shows ' + HT.dates.formatLong(shownTodayDate) + '.' }),
+      el('button', { type: 'button', class: 'primary', text: 'Go to today', onclick: function () { route(); } })
+    ]);
+    main.insertBefore(newDayBanner, main.firstChild);
+  }
+  function watchDayChange() {
+    document.addEventListener('visibilitychange', onReturn);
+    window.addEventListener('pageshow', onReturn);
+    window.addEventListener('focus', onReturn);
+    setInterval(offerNewDay, 60000);
+    // Tapping the tab you're already on re-renders it (no hashchange fires for the same
+    // hash), which also moves Today to the new date.
+    var bar = document.querySelector('.tabbar');
+    if (bar) bar.addEventListener('click', function (ev) {
+      var a = ev.target && ev.target.closest ? ev.target.closest('a[data-tab]') : null;
+      if (!a) return;
+      var target = a.getAttribute('href');
+      var current = location.hash || '#today';
+      if (target === current) { ev.preventDefault(); route(); }
+    });
   }
 
   // ---------- optional modules ----------
@@ -199,6 +243,7 @@
       })
       .then(function () {
         window.addEventListener('hashchange', route);
+        watchDayChange();
         route();
         // Ask once for persistent storage; the Settings screen shows the result and a retry.
         if (!HT.state.dbError && !prefGet('persistAsked') && isHttp()) {

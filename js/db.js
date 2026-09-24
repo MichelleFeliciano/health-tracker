@@ -23,8 +23,8 @@
   var D = HT.dates;
 
   var DB_NAME_DEFAULT = 'health-tracker';
-  var DB_VERSION = 1;          // IndexedDB structural version
-  var SCHEMA_VERSION = 1;      // backup-file / record schema version
+  var DB_VERSION = 2;          // IndexedDB version (2: settings.rangeNoticeOn, T001-13)
+  var SCHEMA_VERSION = 2;      // backup-file / record schema version (2: settings.rangeNoticeOn)
   var APP_ID = 'health-tracker';
 
   var STORES = ['dailyLog', 'meals', 'steps', 'sleepSamples', 'settings', 'tombstones'];
@@ -45,6 +45,10 @@
     glucoseUnit: 'mg/dL',
     rangeLowMgdl: null,    // user-set range (with their care team); blank by default
     rangeHighMgdl: null,
+    // Out-of-range notice is OPT-IN and off by default (decisions.md 2026-09-23 amendment,
+    // A-003: a user-set range lowers but does not remove FDA device-function risk).
+    // Only a strict boolean true turns it on; saving a range never turns it on.
+    rangeNoticeOn: false,
     updatedAt: EPOCH_ISO
   };
 
@@ -87,6 +91,17 @@
       db.createObjectStore('settings', { keyPath: 'key' });
       var tomb = db.createObjectStore('tombstones', { keyPath: 'key' });
       tomb.createIndex('store', 'store', { unique: false });
+    },
+    // v2 (T001-13): settings gain rangeNoticeOn. Existing installs get an explicit false.
+    // updatedAt is left alone: this is a schema fill-in, not a user edit, so it must not
+    // win a backup merge against a real change made on another device.
+    2: function (db, tx) {
+      var os = tx.objectStore('settings');
+      var r = os.get('settings');
+      r.onsuccess = function () {
+        var s = r.result;
+        if (s && typeof s.rangeNoticeOn !== 'boolean') { s.rangeNoticeOn = false; os.put(s); }
+      };
     }
   };
 
@@ -213,7 +228,13 @@
       return out;
     });
   }
-  function saveSettings(s) { s.key = 'settings'; return putEditable('settings', s); }
+  function saveSettings(s) {
+    s.key = 'settings';
+    // T001-13: always store the opt-in as a real boolean (strict true only), so a saved
+    // record and its backup/restore copy are identical.
+    s.rangeNoticeOn = s.rangeNoticeOn === true;
+    return putEditable('settings', s);
+  }
 
   function emptyDailyLog(date) {
     return { date: date, anxiety: null, mood: null, energy: null, stress: null, hardToTell: [], tags: [], notes: '', updatedAt: EPOCH_ISO };
@@ -270,6 +291,12 @@
       ['rangeLowMgdl', 'rangeHighMgdl'].forEach(function (k) {
         o[k] = (typeof r[k] === 'number' && isFinite(r[k]) && r[k] > 0 && r[k] <= 1000) ? r[k] : null;
       });
+      // T001-08: an inverted or empty range (low >= high) would flag every reading; drop it.
+      if (o.rangeLowMgdl !== null && o.rangeHighMgdl !== null && o.rangeLowMgdl >= o.rangeHighMgdl) {
+        o.rangeLowMgdl = null; o.rangeHighMgdl = null;
+      }
+      // T001-13: strict true only ("true", 1, etc. restore as off).
+      o.rangeNoticeOn = r.rangeNoticeOn === true;
       o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
       return o;
     },
@@ -299,7 +326,14 @@
   // ---------- backup file ----------
   // Upgrades a backup object FROM schemaVersion (n-1) TO n. Add one per schema change.
   var backupMigrations = {
-    // 2: function (b) { ...; return b; }
+    // v1 -> v2 (T001-13): v1 had no opt-in, so a v1 file always restores with the notice off,
+    // even if the field was hand-added.
+    2: function (b) {
+      if (b.stores && Array.isArray(b.stores.settings)) {
+        b.stores.settings.forEach(function (r) { if (r && typeof r === 'object') r.rangeNoticeOn = false; });
+      }
+      return b;
+    }
   };
 
   /**
@@ -341,7 +375,9 @@
         clean[s].push(c);
       });
     });
-    return { ok: true, skipped: skipped, backup: { app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: b.exportedAt, stores: clean } };
+    var records = 0;
+    STORES.forEach(function (s) { records += clean[s].length; });
+    return { ok: true, skipped: skipped, records: records, backup: { app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: b.exportedAt, stores: clean } };
   }
 
   function recTime(r, store) {
@@ -460,6 +496,10 @@
     if (!prep.ok) return Promise.resolve(prep);
     var inc = prep.backup.stores;
     if (mode === 'replace') {
+      // T001-01: never wipe the device for a file with nothing readable in it.
+      if (!prep.records) {
+        return Promise.resolve({ ok: false, error: 'This backup has no readable entries, so nothing was changed.', skipped: prep.skipped });
+      }
       return withTx(STORES, 'readwrite', function (tx) {
         STORES.forEach(function (s) {
           var os = tx.objectStore(s);
@@ -493,6 +533,7 @@
     SLEEP_STAGES: SLEEP_STAGES,
     STEP_ORIGINS: STEP_ORIGINS,
     SETTINGS_DEFAULTS: SETTINGS_DEFAULTS,
+    MIGRATIONS: migrations,   // exposed for tests (tests/tests.js builds a v1 DB with it)
     keys: keys,
     newId: newId,
     configure: configure,

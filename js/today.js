@@ -118,7 +118,8 @@
       var unsure = el('input', { type: 'radio', name: name, value: 'unsure' });
       inputs.push(unsure);
       var status = el('span', { class: 'status' });
-      var clearBtn = el('button', { type: 'button', class: 'link', text: 'Clear' });
+      // T001-11: a distinct accessible name per rating ("Clear anxiety rating").
+      var clearBtn = el('button', { type: 'button', class: 'link', text: 'Clear', 'aria-label': 'Clear ' + m.name.toLowerCase() + ' rating' });
       fs.appendChild(el('div', { class: 'extra' }, [
         el('label', { class: 'choice' }, [unsure, el('span', { text: isToday ? 'Hard to tell today' : 'Hard to tell for this day' })]),
         clearBtn, status
@@ -225,7 +226,11 @@
             el('button', { type: 'button', class: 'danger', text: 'Delete', 'aria-label': 'Delete meal at ' + D.formatTime(m.time), onclick: function () { removeMeal(m); } })
           ])
         ]);
-        if (m.glucose && U.outsideRange(m.glucose.value, m.glucose.unit, s.rangeLowMgdl, s.rangeHighMgdl)) {
+        // T001-13: the notice is OPT-IN (decisions.md 2026-09-23 amendment): shown only when
+        // the user switched it on in Settings AND the reading is outside their own range,
+        // compared at the precision shown on screen (T001-05). Once per reading, no alerts.
+        if (m.glucose && s.rangeNoticeOn === true &&
+            U.outsideRange(m.glucose.value, m.glucose.unit, s.rangeLowMgdl, s.rangeHighMgdl, s.glucoseUnit)) {
           li.appendChild(el('div', { style: 'flex-basis:100%' }, [rangeNoticeEl()]));
         }
         mealListEl.appendChild(li);
@@ -276,6 +281,11 @@
       var noteIn = el('input', { type: 'text', id: fid + '-note', maxlength: '2000', autocomplete: 'off' });
       noteIn.value = existing ? (existing.note || '') : '';
       var err = el('div', { class: 'field-error', id: fid + '-ge', role: 'alert' });
+      var submitBtn = el('button', { type: 'submit', class: 'primary', text: 'Save meal' });
+      // T001-02: the id is fixed when the form opens, and a second submit is ignored while
+      // a save is in flight, so a double-click/double-tap can never create two meals.
+      var mealId = existing ? existing.id : HT.db.newId();
+      var saving = false;
 
       var form = el('form', { class: 'meal-form', novalidate: true, 'aria-label': existing ? 'Edit meal' : 'Add meal' }, [
         el('label', { for: timeIn.id, text: 'Time' }), timeIn,
@@ -289,13 +299,14 @@
         gIn, err,
         el('label', { for: noteIn.id, text: 'What you ate (optional)' }), noteIn,
         el('div', { class: 'row', style: 'margin-top:12px' }, [
-          el('button', { type: 'submit', class: 'primary', text: 'Save meal' }),
+          submitBtn,
           el('button', { type: 'button', text: 'Cancel', onclick: closeForm })
         ])
       ]);
 
       form.addEventListener('submit', function (ev) {
         ev.preventDefault();
+        if (saving) return;
         err.textContent = '';
         var t = (timeIn.value || '').slice(0, 5);
         if (!D.isValidTime(t)) { err.textContent = 'Enter a time for the meal.'; timeIn.focus(); return; }
@@ -309,14 +320,21 @@
         }
         var carb = null;
         carbInputs.forEach(function (r) { if (r.checked) carb = r.value; });
-        var rec = existing ? JSON.parse(JSON.stringify(existing)) : { date: date };
+        var rec = existing ? JSON.parse(JSON.stringify(existing)) : { id: mealId, date: date };
         rec.time = t; rec.carb = carb; rec.glucose = glucose; rec.note = noteIn.value.trim().slice(0, 2000);
+        saving = true;
+        submitBtn.disabled = true;
         A.status('Saving…');
         HT.db.saveMeal(rec).then(function () {
           A.status('Saved', 'ok');
+          if (!alive) return;
           closeForm();
           return reloadMeals();
-        }, A.saveError);
+        }, function (e) {
+          saving = false;
+          submitBtn.disabled = false;
+          A.saveError(e);
+        });
       });
 
       mealFormSlot.appendChild(form);

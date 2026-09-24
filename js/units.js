@@ -82,17 +82,24 @@
     return { ok: true, value: v };
   }
 
+  /** An exact mg/dL number rounded the way it is shown in `unit` (display precision). */
+  function mgdlAtDisplay(mgdl, unit) { return unit === MMOL ? mgdlToMmol(mgdl) : Math.round(mgdl); }
+
   /**
    * Is a reading outside the user's own range? Range bounds are stored as exact mg/dL
    * (either may be null). Returns false when no range is set.
+   * T001-05: the comparison is made at DISPLAY precision in `displayUnit` (defaults to the
+   * reading's own unit), i.e. on the same rounded numbers the user sees on screen. So a
+   * reading shown as "3.9 mmol/L" is never flagged against a low bound shown as "3.9".
+   * Callers must still check the user's opt-in (settings.rangeNoticeOn) before showing
+   * any notice (decisions.md 2026-09-23 amendment).
    */
-  function outsideRange(value, unit, lowMgdl, highMgdl) {
+  function outsideRange(value, unit, lowMgdl, highMgdl, displayUnit) {
     if (value == null) return false;
-    var mg = toMgdlExact(value, unit);
-    // Compare at display precision so "3.9 mmol/L" vs a low of 3.9 isn't flagged by drift.
-    var eps = 1e-6;
-    if (lowMgdl != null && mg < lowMgdl - eps) return true;
-    if (highMgdl != null && mg > highMgdl + eps) return true;
+    var du = isUnit(displayUnit) ? displayUnit : unit;
+    var shown = convert(value, unit, du);
+    if (lowMgdl != null && shown < mgdlAtDisplay(lowMgdl, du)) return true;
+    if (highMgdl != null && shown > mgdlAtDisplay(highMgdl, du)) return true;
     return false;
   }
 
