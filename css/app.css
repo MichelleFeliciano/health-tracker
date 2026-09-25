@@ -23,6 +23,7 @@
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --glow: rgba(214, 150, 128, 0.22);
   --shadow: 0 1px 2px rgba(92, 60, 45, 0.06), 0 4px 14px rgba(92, 60, 45, 0.07);
+  --leaf: rgba(95, 122, 85, 0.13);   /* sage leaves, decoration only */
   --radius: 20px;
   --tap: 44px;
   --nav-h: 60px;
@@ -52,6 +53,7 @@
     --focus: #cfb0e6;        /* lavender, 9.6:1 on --bg */
     --glow: rgba(234, 169, 154, 0.10);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --leaf: rgba(181, 204, 168, 0.07);
   }
 }
 
@@ -79,6 +81,15 @@ body {
   padding-right: var(--safe-right);
   padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + 16px);
   min-height: 100vh;
+}
+
+/* Faint sage leaf sprigs behind everything (decorative). Cards and the tab bar are opaque,
+   so text never sits on the pattern except page-level headings, which keep full contrast. */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--leaf);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240' fill='black'%3E%3Cg transform='translate%2818 70%29 rotate%28-28%29 scale%280.9%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Cg transform='translate%28130 215%29 rotate%28-62%29 scale%280.75%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Cg transform='translate%28150 40%29 rotate%2825%29 scale%280.55%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Ccircle cx='60' cy='175' r='3'/%3E%3Ccircle cx='210' cy='130' r='2.5'/%3E%3Ccircle cx='105' cy='120' r='2'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240' fill='black'%3E%3Cg transform='translate%2818 70%29 rotate%28-28%29 scale%280.9%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Cg transform='translate%28130 215%29 rotate%28-62%29 scale%280.75%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Cg transform='translate%28150 40%29 rotate%2825%29 scale%280.55%29'%3E%3Cpath d='M0 0Q30-6 110 0' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2818 0%29 rotate%28-38%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2834 -1%29 rotate%2838%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2852 0%29 rotate%28-36%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2870 -1%29 rotate%2836%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%2888 0%29 rotate%28-30%29'/%3E%3Cpath d='M0 0C7-9 20-9 28 0C20 9 7 9 0 0Z' transform='translate%28108 0%29 rotate%280%29'/%3E%3C/g%3E%3Ccircle cx='60' cy='175' r='3'/%3E%3Ccircle cx='210' cy='130' r='2.5'/%3E%3Ccircle cx='105' cy='120' r='2'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat;
 }
 
 .skip-link {
@@ -315,5 +326,6 @@ fieldset.card > legend + * { clear: both; }
 @media print {
   .tabbar, .skip-link, .save-status, button { display: none !important; }
   body { padding: 0; background: #fff; }
+  body::before { display: none; }
   .card { box-shadow: none; }
 }
