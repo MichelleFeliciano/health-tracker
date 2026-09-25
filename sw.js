@@ -9,7 +9,7 @@
 'use strict';
 
 var CACHE_PREFIX = 'health-tracker-';
-var CACHE_VERSION = CACHE_PREFIX + 'v12';
+var CACHE_VERSION = CACHE_PREFIX + 'v13';
 var LEGACY_CACHES = ['ht-v1', 'ht-v2'];   // this app's own old names; never match other apps' caches
 
 var CORE = [

@@ -46,7 +46,7 @@
     function hardToTell(l, key) { return Array.isArray(l.hardToTell) && l.hardToTell.indexOf(key) >= 0; }
 
     // Ratings drawn as dot rows (see dotRows); the rest of the day is summarised in text.
-    var DOT_KEYS = ['mood', 'energy'];
+    var DOT_KEYS = ['anxiety', 'mood', 'energy', 'stress'];
 
     // T001-10: "Hard to tell" is an answer, so it is listed ("Mood: hard to tell").
     function summary(d) {
@@ -66,7 +66,7 @@
     }
 
     /**
-     * Mood and energy as 10 small dots each (value n fills n dots), one calm colour per rating,
+     * Each 0–10 rating as 10 small dots (value n fills n dots), one calm colour per rating,
      * never coloured by value: ratings have no cut-offs. The name and number are written out,
      * so the dots are decoration only (aria-hidden).
      */

@@ -27,6 +27,8 @@
   --sage: #4a6642;           /* deep sage text: 6.0:1 on --bg, 5.4:1 on --surface */
   --sage-soft: #e2e9d6;      /* pale sage fill */
   --sage-line: #6f8a63;      /* sage borders: >= 3:1 on --bg, --surface, --sage-soft */
+  --plum: #7a5a8a;           /* History dots only: 4.8:1 on --surface */
+  --ochre: #94661c;          /* History dots only: 4.2:1 on --surface */
   --radius: 20px;
   --tap: 44px;
   --nav-h: 60px;
@@ -60,6 +62,8 @@
     --sage: #b5cca8;
     --sage-soft: #283024;
     --sage-line: #8fa883;
+    --plum: #c9aee0;
+    --ochre: #e0b35e;
   }
 }
 
@@ -362,7 +366,7 @@ fieldset.card > legend + * { clear: both; }
 .history-list .h-date { font-family: var(--font-display); font-weight: 600; font-size: 1.1rem; margin-bottom: 4px; }
 .history-list .h-sum { color: var(--muted); font-size: 0.93rem; }
 .history-list .h-sum:empty { display: none; }
-/* Mood / energy dot rows: one colour per rating, never coloured by value (no cut-offs). */
+/* Rating dot rows: one colour per rating, never coloured by value (no cut-offs). */
 .h-rating { display: flex; align-items: center; gap: 10px; margin: 3px 0; font-size: 0.93rem; }
 .h-name { flex: 0 0 5.5em; font-weight: 600; font-variant-numeric: tabular-nums; }
 .h-name:only-child { flex: 1 1 auto; }
@@ -371,6 +375,8 @@ fieldset.card > legend + * { clear: both; }
 .h-dots span.on { background: var(--dot); }
 .h-mood { --dot: var(--accent); }
 .h-energy { --dot: var(--sage-line); }
+.h-anxiety { --dot: var(--plum); }
+.h-stress { --dot: var(--ochre); }
 
 .placeholder { text-align: center; padding: 40px 12px; color: var(--muted); }
 
