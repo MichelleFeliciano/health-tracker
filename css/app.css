@@ -23,7 +23,10 @@
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
   --glow: rgba(214, 150, 128, 0.22);
   --shadow: 0 1px 2px rgba(92, 60, 45, 0.06), 0 4px 14px rgba(92, 60, 45, 0.07);
-  --leaf: rgba(95, 122, 85, 0.13);   /* sage leaves, decoration only */
+  --leaf: rgba(95, 122, 85, 0.2);    /* sage leaves, decoration only */
+  --sage: #4a6642;           /* deep sage text: 6.0:1 on --bg, 5.4:1 on --surface */
+  --sage-soft: #e2e9d6;      /* pale sage fill */
+  --sage-line: #6f8a63;      /* sage borders: >= 3:1 on --bg, --surface, --sage-soft */
   --radius: 20px;
   --tap: 44px;
   --nav-h: 60px;
@@ -53,7 +56,10 @@
     --focus: #cfb0e6;        /* lavender, 9.6:1 on --bg */
     --glow: rgba(234, 169, 154, 0.10);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --leaf: rgba(181, 204, 168, 0.07);
+    --leaf: rgba(181, 204, 168, 0.1);
+    --sage: #b5cca8;
+    --sage-soft: #283024;
+    --sage-line: #8fa883;
   }
 }
 
@@ -116,7 +122,7 @@ body::before {
 }
 /* Boho rainbow arch beside the screen title (decorative; drawn in the accent colour). */
 .app-header h1::before {
-  content: ""; flex: 0 0 auto; width: 30px; height: 18px; background: var(--accent);
+  content: ""; flex: 0 0 auto; width: 30px; height: 18px; background: var(--sage);
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 18' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M2 17a13 13 0 0 1 26 0M7 17a8 8 0 0 1 16 0M12 17a3 3 0 0 1 6 0'/%3E%3C/svg%3E") center / contain no-repeat;
           mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 18' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M2 17a13 13 0 0 1 26 0M7 17a8 8 0 0 1 16 0M12 17a3 3 0 0 1 6 0'/%3E%3C/svg%3E") center / contain no-repeat;
 }
@@ -128,7 +134,7 @@ main { padding: 0 16px; max-width: 720px; margin: 0 auto; }
 main:focus { outline: none; }
 
 h1, h2, h3, legend { font-family: var(--font-display); }
-h2 { font-size: 1.3rem; font-weight: 600; margin: 24px 0 8px; }
+h2 { font-size: 1.3rem; font-weight: 600; margin: 24px 0 8px; color: var(--sage); }
 h3 { font-size: 1.1rem; font-weight: 600; margin: 16px 0 6px; }
 p { margin: 8px 0; }
 .muted { color: var(--muted); }
@@ -147,8 +153,8 @@ p { margin: 8px 0; }
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
   display: flex;
-  background: var(--surface);
-  border-top: 1px solid var(--surface-2);
+  background: var(--sage-soft);
+  border-top: 1px solid var(--sage-line);
   box-shadow: 0 -4px 16px rgba(92, 60, 45, 0.08);
   padding-bottom: var(--safe-bottom);
   padding-left: var(--safe-left);
@@ -209,8 +215,14 @@ fieldset.card > legend { float: left; width: 100%; font-size: 1.2rem; }
 fieldset.card > legend + * { clear: both; }
 
 /* ---------- 0–10 rating control ---------- */
-.rating { margin: 8px 0 18px; }
-.rating .question { font-weight: 700; font-size: 1.02rem; }
+/* Each rating is its own soft card; the legend floats so it stays inside the padding. */
+.rating {
+  background: var(--surface); border: 1px solid var(--surface-2); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 14px 12px; margin: 14px 0;
+}
+.rating > .question { float: left; width: 100%; }
+.rating > .question + * { clear: both; }
+.rating .question { font-family: var(--font-display); font-weight: 600; font-size: 1.15rem; }
 .rating .ends { display: flex; justify-content: space-between; gap: 12px; font-size: 0.88rem; color: var(--muted); margin: 4px 0 6px; }
 .rating .ends span:last-child { text-align: right; }
 .scale {
@@ -233,7 +245,18 @@ fieldset.card > legend + * { clear: both; }
 .choice input:checked + span::after { content: " \2713"; font-weight: 700; } /* check mark: not color alone */
 .choice input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
 .rating .extra { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-.rating .extra .choice span { font-weight: 600; padding: 0 12px; }
+.rating .extra .choice span { font-weight: 600; padding: 0 12px; border-style: dashed; border-color: var(--sage-line); background: transparent; }
+.rating .extra .choice input:checked + span { border-style: solid; border-color: var(--accent); background: var(--accent); }
+
+/* "Petal" number tiles: blush fill, one pointed corner; the chosen one lifts (border 3.3:1 on blush). */
+.scale .choice span {
+  border-width: 1.5px; border-radius: 18px 18px 18px 6px;
+  background: var(--accent-soft); color: var(--text);
+}
+.scale .choice input:checked + span {
+  background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  transform: translateY(-2px); box-shadow: 0 4px 10px rgba(154, 75, 61, 0.3);
+}
 .rating .status { font-size: 0.9rem; color: var(--muted); }
 
 /* ---------- chips ---------- */
@@ -242,8 +265,8 @@ fieldset.card > legend + * { clear: both; }
   min-height: var(--tap);
   border-radius: 999px;
   padding: 8px 16px;
-  border: 2px solid var(--border);
-  background: var(--bg);
+  border: 2px solid var(--sage-line);
+  background: var(--sage-soft);
   font-weight: 600;
 }
 .chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
@@ -277,7 +300,7 @@ fieldset.card > legend + * { clear: both; }
 }
 .notice p { margin: 4px 0; }
 .banner { background: var(--accent-soft); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; }
-.disclaimer { font-size: 0.88rem; font-style: italic; color: var(--muted); border-top: 1px dashed var(--border); margin-top: 24px; padding-top: 10px; }
+.disclaimer { font-size: 0.88rem; font-style: italic; color: var(--muted); border-top: 1px dashed var(--sage-line); margin-top: 24px; padding-top: 10px; }
 
 /* ---------- caffeine (A-010 §6, U-1: neutral only — no notice/danger/focus colours) ---------- */
 .caf-total { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -316,7 +339,7 @@ fieldset.card > legend + * { clear: both; }
 
 /* ---------- motion ---------- */
 @media (prefers-reduced-motion: no-preference) {
-  .choice span, .chip, button { transition: background-color 120ms ease, color 120ms ease; }
+  .choice span, .chip, button { transition: background-color 120ms ease, color 120ms ease, transform 120ms ease; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
@@ -327,5 +350,5 @@ fieldset.card > legend + * { clear: both; }
   .tabbar, .skip-link, .save-status, button { display: none !important; }
   body { padding: 0; background: #fff; }
   body::before { display: none; }
-  .card { box-shadow: none; }
+  .card, .rating { box-shadow: none; }
 }
