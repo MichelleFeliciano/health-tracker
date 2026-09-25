@@ -227,8 +227,8 @@ fieldset.card > legend + * { clear: both; }
 .rating > .question { float: left; width: 100%; }
 .rating > .question + * { clear: both; }
 .rating .question { font-family: var(--font-display); font-weight: 600; font-size: 1.15rem; }
-.rating .ends { display: flex; justify-content: space-between; gap: 12px; font-size: 0.88rem; color: var(--muted); margin: 4px 0 6px; }
-.rating .ends span:last-child { text-align: right; }
+/* The two end labels stack, one per line, so single words never wrap on their own. */
+.rating .ends { display: flex; flex-direction: column; gap: 2px; font-size: 0.9rem; color: var(--muted); margin: 6px 0 10px; }
 .scale {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
