@@ -27,7 +27,9 @@
  *  steps       { key, date, origin, value int|null, ...importer fields }   (steps only)
  *  healthDays  { key, date, origin, kind, asleepMin, …SLEEP_DAY_FIELDS…, updatedAt }
  *  settings    { key, glucoseUnit, rangeLowMgdl, rangeHighMgdl, rangeNoticeOn,
- *                sourcePriority { steps: [{key, cls, name}] | null, sleep: … } | null, updatedAt }
+ *                sourcePriority { steps: [{key, cls, name}] | null, sleep: … } | null,
+ *                lastExportDate ISO UTC | null, updatedAt }
+ *              lastExportDate = the latest <ExportDate> of any full export imported (A-006 RC-1).
  *
  *  Schema history (backup schemaVersion; IndexedDB DB_VERSION uses the same numbers):
  *  1  first release
@@ -90,6 +92,13 @@
     // {key, cls, name}, or null = default order. Moved here from localStorage in schema v3 so
     // backups include it (decisions.md 2026-09-23 "Schema v3").
     sourcePriority: null,
+    // The latest <ExportDate> of any full export imported on this device (ISO UTC), or null.
+    // An export dated strictly earlier needs an explicit confirm before it is applied, because
+    // it would replace newer sleep/step data for the days it covers (A-006 RC-1; decisions.md
+    // 2026-09-24 "A-006 rulings"). Added within schema 3 (v3 has not shipped): no version bump;
+    // migration 3 and sanitize.settings fill it with null. Raised only by putExportDays and by
+    // a merge (the later of the two); raising it never stamps updatedAt (not a user edit).
+    lastExportDate: null,
     updatedAt: EPOCH_ISO
   };
 
@@ -364,19 +373,41 @@
     });
   }
 
+  /** The later of two ISO UTC strings (either may be null/invalid); null when neither is valid. */
+  function laterIso(a, b) {
+    var ta = D.isoToMs(a), tb = D.isoToMs(b);
+    if (ta !== ta) return tb === tb ? b : null;
+    if (tb !== tb) return a;
+    return tb > ta ? b : a;
+  }
+
   /**
    * Commit one full-export import in ONE transaction (nothing is written if it fails, AT-12).
-   * plan = { steps: [stepRecord], healthDays: [healthDay], deleteSteps: [key], deleteHealthDays: [key] }
-   * (built by HT.healthAgg.toExportPlan). A day in the file overwrites that day's export
-   * records, as before v3: a day with no step count removes an old export step record, and a
-   * day with no sleep removes an old export healthDay (with a tombstone, so an older backup
-   * can't bring it back — A-002 §2 item 14). New healthDays clear any tombstone for their key.
+   * plan = { steps: [stepRecord], healthDays: [healthDay], deleteSteps: [key], deleteHealthDays: [key],
+   *          exportDate?: ISO UTC | null }
+   * (built by HT.healthAgg.toExportPlan; exportDate is added by js/import-health.js). A day in
+   * the file overwrites that day's export records, as before v3: a day with no step count
+   * removes an old export step record, and a day with no sleep removes an old export healthDay
+   * (with a tombstone, so an older backup can't bring it back — A-002 §2 item 14). New
+   * healthDays clear any tombstone for their key.
+   * settings.lastExportDate is raised to plan.exportDate when that is later (A-006 RC-1), in
+   * the same transaction; updatedAt is kept (an import is not a settings edit).
+   * Resolves { written, removedSteps, removedSleep }. removed* count only records that really
+   * existed and were deleted (T004-01), so the import summary can say what was removed.
    */
   function putExportDays(plan) {
-    return withTx(['steps', 'healthDays', 'tombstones'], 'readwrite', function (tx) {
+    return withTx(['steps', 'healthDays', 'tombstones', 'settings'], 'readwrite', function (tx) {
       var st = tx.objectStore('steps'), hd = tx.objectStore('healthDays'), tb = tx.objectStore('tombstones');
       var now = D.nowIso();
-      (plan.deleteSteps || []).forEach(function (k) { st.delete(k); });
+      var out = { written: (plan.steps || []).length + (plan.healthDays || []).length, removedSteps: 0, removedSleep: 0 };
+      (plan.deleteSteps || []).forEach(function (k) {
+        var g = st.get(k);
+        g.onsuccess = function () {
+          if (!g.result) return;
+          st.delete(k);
+          out.removedSteps++;
+        };
+      });
       (plan.steps || []).forEach(function (r) { st.put(r); });
       (plan.healthDays || []).forEach(function (r) { hd.put(r); tb.delete(keys.tombstone('healthDays', r.key)); });
       (plan.deleteHealthDays || []).forEach(function (k) {
@@ -385,9 +416,22 @@
           if (!g.result) return;
           hd.delete(k);
           tb.put({ key: keys.tombstone('healthDays', k), store: 'healthDays', id: k, deletedAt: now });
+          out.removedSleep++;
         };
       });
-      return (plan.steps || []).length + (plan.healthDays || []).length;
+      if (D.isIso(plan.exportDate)) {
+        var os = tx.objectStore('settings');
+        var gs = os.get('settings');
+        gs.onsuccess = function () {
+          var cur = gs.result;
+          var later = laterIso(cur ? cur.lastExportDate : null, plan.exportDate);
+          if (cur && later === cur.lastExportDate) return;
+          var rec = buildSettings(cur, { lastExportDate: later });
+          rec.updatedAt = cur ? isoOr(cur.updatedAt, EPOCH_ISO) : EPOCH_ISO;
+          os.put(rec);
+        };
+      }
+      return out;   // the counters are filled by the callbacks above; read after commit
     });
   }
 
@@ -402,6 +446,7 @@
     // record and its backup/restore copy are identical.
     out.rangeNoticeOn = out.rangeNoticeOn === true;
     out.sourcePriority = sanitizePriority(out.sourcePriority);
+    out.lastExportDate = D.isIso(out.lastExportDate) ? out.lastExportDate : null;
     return JSON.parse(JSON.stringify(out));
   }
   function getSettings() {
@@ -528,14 +573,16 @@
       // T001-13: strict true only ("true", 1, etc. restore as off).
       o.rangeNoticeOn = r.rangeNoticeOn === true;
       o.sourcePriority = sanitizePriority(r.sourcePriority);
+      o.lastExportDate = D.isIso(r.lastExportDate) ? r.lastExportDate : null;
       o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
       return o;
     },
     // Per-day sleep from the full export (schema v3). Whitelisted fields only; the key is
-    // recomputed from date + origin.
+    // recomputed from date + origin. Only origin 'export' exists in this store (A-006 RC-3):
+    // a 'shortcut' healthDay would never be read and no import could ever remove it.
     healthDays: function (r) {
-      if (!r) return null;
-      return makeHealthDay(r, r.origin, r.updatedAt);
+      if (!r || r.origin !== 'export') return null;
+      return makeHealthDay(r, 'export', r.updatedAt);
     },
     // Imported stores: the importer modules own the extra fields; we check the key fields
     // and that the stored key matches the one derived from them.
@@ -576,7 +623,10 @@
     //   so they stay out of P12.
     // Steps: full-export sleep fields move into healthDays with the same splitExportSteps as
     //   DB migration 3 (updatedAt EPOCH: a schema move, not a new import).
-    // Settings: no sourcePriority in v2 → sanitize gives null (default order).
+    // Settings: no sourcePriority in v2 → sanitize gives null (default order). In a Merge,
+    //   planMerge keeps the device's own order when such a record wins (A-006 RC-2 / T004-02;
+    //   importBackup passes legacySettings from prepareBackup's fromSchema). Replace all
+    //   restores it as null.
     3: function (b) {
       if (b.stores && Array.isArray(b.stores.steps)) {
         var keep = [], moved = [];
@@ -671,6 +721,7 @@
     // only tombstones or only settings has records = 0 and is refused by Replace all.
     var counts = countDataRecords(clean);
     return { ok: true, skipped: skipped, records: counts.total, dataRecords: counts.total, counts: counts,
+      fromSchema: v,
       backup: { app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: b.exportedAt, stores: clean } };
   }
 
@@ -689,9 +740,15 @@
    *    If a tombstone wins, the record is deleted and the tombstone kept; if a record wins,
    *    any tombstone for that key is removed.
    *  - imported stores: add records whose key doesn't exist yet; never overwrite.
+   *  - settings extras: when an incoming settings record wins and opts.legacySettings is true
+   *    (the file is schema 1/2, which never carried an order), the device's sourcePriority is
+   *    kept (A-006 RC-2 / T004-02). lastExportDate always ends as the later of the two (A-006
+   *    RC-1): it describes data the device now holds, so a merge never moves it backwards.
+   * opts = { legacySettings: boolean } (optional).
    * Returns { puts:{store:[rec]}, deletes:{store:[key]}, counts:{added,updated,deleted,unchanged} }.
    */
-  function planMerge(existing, incoming) {
+  function planMerge(existing, incoming, opts) {
+    opts = opts || {};
     var puts = {}, deletes = {};
     STORES.forEach(function (s) { puts[s] = []; deletes[s] = []; });
     var counts = { added: 0, updated: 0, deleted: 0, unchanged: 0 };
@@ -729,6 +786,7 @@
           var it = recTime(inTomb[tk], 'tombstones');
           if (!cur || it > cur.t) cur = { kind: 'tomb', v: inTomb[tk], t: it, incoming: true };
         }
+        if (s === 'settings' && cur.kind === 'rec') cur = settingsExtras(cur, exRec[id], inRec[id]);
         if (!cur.incoming) { counts.unchanged++; return; }
         if (cur.kind === 'rec') {
           puts[s].push(cur.v);
@@ -741,6 +799,26 @@
         }
       });
     });
+
+    /**
+     * Settings winner adjustments (rules above). Returns the winner to apply. When the device's
+     * record wins but the file has a later lastExportDate, the device record (same updatedAt)
+     * is rewritten with that date and counted as updated.
+     */
+    function settingsExtras(win, exR, inR) {
+      var later = laterIso(exR ? exR.lastExportDate : null, inR ? inR.lastExportDate : null);
+      var v;
+      if (win.incoming) {
+        v = JSON.parse(JSON.stringify(win.v));
+        if (opts.legacySettings && exR) v.sourcePriority = exR.sourcePriority === undefined ? null : exR.sourcePriority;
+        v.lastExportDate = later;
+        return { kind: 'rec', v: v, t: win.t, incoming: true };
+      }
+      if ((win.v.lastExportDate || null) === later) return win;
+      v = JSON.parse(JSON.stringify(win.v));
+      v.lastExportDate = later;
+      return { kind: 'rec', v: v, t: win.t, incoming: true };
+    }
 
     IMPORTED.forEach(function (s) {
       var kp = KEY_PATH[s];
@@ -808,7 +886,7 @@
       });
     }
     return snapshot().then(function (ex) {
-      var plan = planMerge(ex, inc);
+      var plan = planMerge(ex, inc, { legacySettings: prep.fromSchema < 3 });
       return applyPlan(plan).then(function () {
         return { ok: true, mode: 'merge', counts: plan.counts, skipped: prep.skipped };
       });
@@ -856,6 +934,7 @@
     makeHealthDay: makeHealthDay,
     splitExportSteps: splitExportSteps,
     sanitizePriority: sanitizePriority,
+    laterIso: laterIso,
     countDataRecords: countDataRecords,
     describeRecordCounts: describeRecordCounts,
     emptyDailyLog: emptyDailyLog,

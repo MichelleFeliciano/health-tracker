@@ -165,8 +165,30 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
     this.carry = '';
     this.sawRoot = false;
     this.sawEnd = false;      // '</HealthData>' seen after the last Record (T002-03)
+    // <ExportDate value="…"/> (A-006 RC-1): UTC ms, or null when missing or unreadable.
+    // Apple writes it right after <HealthData>, before <Me> and every Record, so the search
+    // stops at the first Record (a file without it is not scanned twice).
+    this.exportDateMs = null;
+    this.exportDateDone = false;
     this.decoder = new TextDecoder('utf-8');
   }
+
+  /**
+   * Look for <ExportDate value="yyyy-MM-dd HH:mm:ss ±HHMM"/> in buf (the current carry + text).
+   * A tag cut at the chunk end stays in the carry (it starts at the last '<'), so the next
+   * call sees it whole. Unreadable → null: a missing date never blocks an import (RC-1).
+   */
+  Scanner.prototype._findExportDate = function (buf) {
+    var i = buf.indexOf('<ExportDate');
+    var r = buf.indexOf('<Record');
+    if (i < 0 || (r >= 0 && r < i)) { if (r >= 0) this.exportDateDone = true; return; }
+    var e = tagEnd(buf, i);
+    if (e < 0) return;                       // rest of the tag arrives with the next chunk
+    var a = parseAttrs(buf.slice(i, e + 1));
+    var ms = a.value === undefined ? NaN : HD.parseHealthDate(a.value);
+    this.exportDateMs = ms === ms ? ms : null;
+    this.exportDateDone = true;
+  };
 
   /** Feed raw bytes (UTF-8, split anywhere). */
   Scanner.prototype.pushBytes = function (u8) {
@@ -177,6 +199,7 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
   Scanner.prototype.pushText = function (text) {
     var buf = this.carry + text;
     if (!this.sawRoot && buf.indexOf('<HealthData') >= 0) this.sawRoot = true;
+    if (!this.exportDateDone) this._findExportDate(buf);
     var pos = 0, nStep = -2, nSleep = -2, cut = -1;
     for (;;) {
       if (nStep !== -1 && nStep < pos) nStep = buf.indexOf(T_STEP, pos);
@@ -272,7 +295,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
   /**
    * Scan an export (.zip or export.xml) and resolve it into per-day records.
    * opts: { savedOrder: {steps, sleep} | null, zone, onProgress(done,total,phase), isCancelled() }
-   * Resolves { records, sources, priorities, diag, info }. Commits nothing (the caller
+   * Resolves { records, sources, priorities, diag, info } where info.exportDate is the file's
+   * <ExportDate> as ISO UTC, or null when missing/unreadable. Commits nothing (the caller
    * writes records in one IndexedDB transaction).
    */
   function processExport(file, opts) {
@@ -302,6 +326,8 @@ if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScop
       if (opts.onProgress) opts.onProgress(1, 1, 'resolving');
       var res = A.resolveAll(sc, opts.savedOrder || null, opts.zone || HD.localZone);
       res.diag.scan = sc.diag;
+      // ISO UTC string (survives the Worker's structured clone), or null (A-006 RC-1).
+      info.exportDate = sc.exportDateMs === null ? null : new Date(sc.exportDateMs).toISOString();
       res.info = info;
       return res;
     });

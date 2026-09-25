@@ -96,29 +96,61 @@
     });
   }
 
-  function scanOnMainThread(file, savedOrder, j) {
+  function scanOnMainThread(file, savedOrder, j, zone) {
     return HT.healthScan.processExport(file, {
       savedOrder: savedOrder,
       onProgress: function (done, total, phase) { j.done = done; j.total = total; j.phase = phase; notify(); },
-      isCancelled: function () { return j.cancelled; }
+      isCancelled: function () { return j.cancelled; },
+      zone: zone      // undefined in the app (device zone); tests pass a fixed zone
     });
   }
 
-  function importExport(file) {
+  // A-006 RC-1, wording fixed by the Architect (decisions.md 2026-09-24 "A-006 rulings").
+  var MSG_OLDER_EXPORT = 'This export is older than one you already imported. Importing it will replace newer sleep and step data for the days it covers. Import anyway?';
+  var MSG_OLDER_DECLINED = 'Nothing was imported. Your newer sleep and step data were kept.';
+
+  /**
+   * True only when both dates are readable and the incoming export is STRICTLY earlier than
+   * the latest one imported (settings.lastExportDate). A missing or unreadable date on either
+   * side never blocks an import (A-006 RC-1).
+   */
+  function isOlderExport(incomingIso, lastIso) {
+    var a = HT.dates.isoToMs(incomingIso), b = HT.dates.isoToMs(lastIso);
+    return a === a && b === b && a < b;
+  }
+
+  /**
+   * opts.confirm(text) -> boolean: the confirm used for an older export (default
+   * window.confirm; tests pass a stub). opts.zone: tests only (main-thread scan).
+   */
+  function importExport(file, opts) {
+    opts = opts || {};
+    var confirmFn = typeof opts.confirm === 'function' ? opts.confirm : function (q) { return window.confirm(q); };
     var j = startJob('export');
     j.text = 'Reading the Apple Health export…';
     var p = getSavedOrder().catch(function () { return { steps: null, sleep: null }; }).then(function (saved) {
       if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
       return (isHttp() && typeof Worker === 'function')
-        ? scanInWorker(file, saved, j).catch(function (e) { if (e && e.fallback && !j.cancelled) return scanOnMainThread(file, saved, j); throw e; })
-        : scanOnMainThread(file, saved, j);
+        ? scanInWorker(file, saved, j).catch(function (e) { if (e && e.fallback && !j.cancelled) return scanOnMainThread(file, saved, j, opts.zone); throw e; })
+        : scanOnMainThread(file, saved, j, opts.zone);
     });
     return p.then(function (res) {
       if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
-      j.phase = 'saving'; j.text = 'Saving…'; notify();
-      // One transaction: step counts -> `steps`, per-day sleep -> `healthDays` (schema v3).
-      var plan = HT.healthAgg.toExportPlan(res.days, HT.dates.nowIso());
-      return HT.db.putExportDays(plan).then(function () { return res; });
+      var exportDate = (res.info && res.info.exportDate) || null;
+      // RC-1: an older export would replace newer data for the days it covers; ask first and
+      // commit nothing unless the user agrees. Unreadable settings → no block.
+      return HT.db.getSettings().catch(function () { return null; }).then(function (st) {
+        if (isOlderExport(exportDate, st && st.lastExportDate) && !confirmFn(MSG_OLDER_EXPORT)) {
+          throw HT.healthDates.importError('olderDeclined', MSG_OLDER_DECLINED);
+        }
+        if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
+        j.phase = 'saving'; j.text = 'Saving…'; notify();
+        // One transaction: step counts -> `steps`, per-day sleep -> `healthDays` (schema v3),
+        // plus settings.lastExportDate (kept at the latest date seen).
+        var plan = HT.healthAgg.toExportPlan(res.days, HT.dates.nowIso());
+        plan.exportDate = exportDate;
+        return HT.db.putExportDays(plan).then(function (out) { res.removed = out; return res; });
+      });
     }).then(function (res) {
       var sd = res.diag.scan;
       var summary = {
@@ -130,6 +162,11 @@
         stepDays: res.diag.stepDays,
         nights: res.days.filter(function (d) { return d.kind === 'night'; }).length,
         inBedOnly: res.days.filter(function (d) { return d.kind === 'inBedOnly'; }).length,
+        napOnly: res.days.filter(function (d) { return d.kind === 'napOnly'; }).length,   // T004-03
+        // T004-01: records from an earlier export that this file's days no longer include.
+        removedSleep: (res.removed && res.removed.removedSleep) || 0,
+        removedSteps: (res.removed && res.removed.removedSteps) || 0,
+        exportDate: (res.info && res.info.exportDate) || null,
         partialNights: res.diag.partialNights,
         stepRecords: sd.steps.kept, sleepRecords: sd.sleep.kept,
         rejected: sd.badDate + sd.steps.endBeforeStart + sd.steps.tooLong + sd.steps.badValue +
@@ -151,6 +188,7 @@
     }, function (e) {
       endJob();
       if (e && e.code === 'cancelled') return { ok: false, cancelled: true, message: 'Import cancelled. Nothing was saved.' };
+      if (e && e.code === 'olderDeclined') return { ok: false, cancelled: true, olderDeclined: true, message: MSG_OLDER_DECLINED };
       var quota = e && (e.name === 'QuotaExceededError' || /quota/i.test(String(e.message || '')));
       return { ok: false, message: quota ? 'The device is out of storage space. Nothing was saved.'
         : ((e && e.userMessage) || 'The import failed. Nothing was saved.') };
@@ -480,7 +518,16 @@
   function exportSummaryLines(s) {
     var lines = ['Imported ' + plural(s.days, 'day') + (s.from ? ' (' + s.from + ' to ' + s.to + ')' : '') + '.'];
     lines.push(plural(s.stepDays, 'day') + ' with steps, ' + plural(s.nights, 'night') + ' of sleep' +
-      (s.inBedOnly ? ', ' + plural(s.inBedOnly, 'night') + ' with time in bed only' : '') + '.');
+      (s.inBedOnly ? ', ' + plural(s.inBedOnly, 'night') + ' with time in bed only' : '') +
+      (s.napOnly ? ', ' + plural(s.napOnly, 'day') + ' with only a nap' : '') + '.');
+    // T004-01: say what an export re-import removed (decision 5: a covered day without sleep or
+    // steps removes the older export record). Only records that really existed are counted.
+    if (s.removedSleep || s.removedSteps) {
+      var gone = [];
+      if (s.removedSleep) gone.push('sleep for ' + plural(s.removedSleep, 'day'));
+      if (s.removedSteps) gone.push('steps for ' + plural(s.removedSteps, 'day'));
+      lines.push('Removed ' + gone.join(' and ') + ' that this export no longer includes.');
+    }
     if (s.partialNights) lines.push(plural(s.partialNights, 'night is', 'nights are') + ' marked partial: the chosen source stopped early while another source kept recording. Averages leave these out or say how many are included.');
     if (s.rejected) lines.push(fmtNum(s.rejected) + (s.rejected === 1 ? ' record was' : ' records were') + ' skipped because the times or values were invalid.');
     if (s.unknownSleep) lines.push(fmtNum(s.unknownSleep) + (s.unknownSleep === 1 ? ' sleep record had a type' : ' sleep records had a type') + ' this app doesn’t know; not counted as sleep.');
@@ -519,6 +566,7 @@
         el('li', { text: 'Steps: each minute is counted once, from the highest source in your priority list, as the Health app does. Totals can still differ slightly from the Health app.' }),
         el('li', { text: 'When a Shortcut file and the full export both cover a day, the Shortcut’s step count is shown, but for sleep the full export’s night is shown (it knows manual entries and which device recorded). If the export has only a nap or only time in bed for that day, the Shortcut’s night is shown, together with the export’s nap or time in bed. Both are kept.' }),
         el('li', { text: 'A Shortcut file older than one already imported for the same day is skipped.' }),
+        el('li', { text: 'A full export made before one you already imported is only applied if you confirm, because it replaces newer sleep and steps for the days it covers.' }),
         el('li', { text: 'Sleep is counted only from “asleep” stages (Core, Deep, REM, Asleep), never from In Bed or Awake.' }),
         el('li', { text: 'A night belongs to the day you woke up. Waking at or after 18:00 counts toward the next day.' }),
         el('li', { text: 'Each night uses one source. If it stopped early while another source kept recording, the night is marked partial and the other figure is shown beside it; they are never added together.' }),
@@ -533,6 +581,10 @@
     getSavedOrder: getSavedOrder,
     importExport: importExport,
     importCsvFiles: importCsvFiles,
+    exportSummaryLines: exportSummaryLines,
+    isOlderExport: isOlderExport,
+    MSG_OLDER_EXPORT: MSG_OLDER_EXPORT,
+    MSG_OLDER_DECLINED: MSG_OLDER_DECLINED,
     _currentOrder: currentOrder
   };
 })(window.HT = window.HT || {});

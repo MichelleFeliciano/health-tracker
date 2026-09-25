@@ -232,30 +232,6 @@
   }
 
   /**
-   * Sleep rows come from the Health importer (another Builder). Accepted hooks, first found wins:
-   *   HT.health.getSleepDays(startDate, endDate) -> Promise<SleepDay[]>
-   *   HT.health.sleepDaysFromSamples(samples[])   -> SleepDay[] (pure; we read sleepSamples)
-   * Without either, sleep is simply "not imported yet".
-   */
-  function loadSleep(start, end) {
-    var h = HT.health;
-    try {
-      if (h && typeof h.getSleepDays === 'function') {
-        return Promise.resolve(h.getSleepDays(start, end)).then(function (rows) { return rows || []; });
-      }
-      if (h && typeof h.sleepDaysFromSamples === 'function' && HT.dates) {
-        // A night stored under date D can start at 18:00 on D−1 or earlier; read a margin.
-        var lo = HT.dates.parseLocalDate(addDays(start, -2)).getTime();
-        var hi = HT.dates.parseLocalDate(addDays(end, 1)).getTime();
-        return rangeGetAll('sleepSamples', 'startMs', lo, hi).then(function (samples) {
-          return (h.sleepDaysFromSamples(samples) || []).filter(function (r) { return r.date >= start && r.date <= end; });
-        });
-      }
-    } catch (e) { return Promise.resolve([]); }
-    return Promise.resolve(null); // null = no sleep provider installed
-  }
-
-  /**
    * Convert the Health importer's read API output (HT.healthData.getDays, js/health-agg.js,
    * B-002) into our raw shape. That API has already applied "Shortcut over export" for both
    * steps and sleep, so each date yields at most one step record and one SleepDay.
@@ -273,28 +249,25 @@
     return { steps: steps, sleep: sleep };
   }
 
-  /** Load raw records for [start, end] (inclusive local dates). */
+  /**
+   * Load raw records for [start, end] (inclusive local dates). Steps and sleep always come from
+   * the importer's read API, HT.healthData.getDays (js/health-agg.js, loaded by index.html),
+   * which applies the source and precedence rules and reads schema v3's `healthDays`. The old
+   * fallback that read the `steps` store directly was removed (A-006 RC-4 note): since v3 that
+   * store holds no sleep, and the fallback was unreachable. If the read API is ever missing
+   * (e.g. an old cached index.html), steps and sleep are shown as "not imported yet".
+   */
   function loadRaw(start, end) {
     if (injected && typeof injected.load === 'function') return Promise.resolve(injected.load(start, end));
     if (!HT.db) return Promise.reject(new Error('no db'));
-    if (HT.healthData && typeof HT.healthData.getDays === 'function') {
-      // Preferred path: the importer's own read API (sleep nights + steps, source rules applied).
-      return Promise.all([
-        rangeGetAll('dailyLog', null, start, end),
-        rangeGetAll('meals', 'date', start, end),
-        Promise.resolve(HT.healthData.getDays({ from: start, to: end })).catch(function () { return []; })
-      ]).then(function (r) {
-        var h = fromHealthDays(r[2]);
-        return { logs: r[0] || [], meals: r[1] || [], steps: h.steps, sleep: h.sleep, sleepProvider: true };
-      });
-    }
+    var hasApi = !!(HT.healthData && typeof HT.healthData.getDays === 'function');
     return Promise.all([
       rangeGetAll('dailyLog', null, start, end),
       rangeGetAll('meals', 'date', start, end),
-      rangeGetAll('steps', 'date', start, end),
-      loadSleep(start, end).catch(function () { return []; })
+      hasApi ? Promise.resolve(HT.healthData.getDays({ from: start, to: end })).catch(function () { return []; }) : []
     ]).then(function (r) {
-      return { logs: r[0] || [], meals: r[1] || [], steps: r[2] || [], sleep: r[3] || [], sleepProvider: r[3] !== null };
+      var h = fromHealthDays(r[2]);
+      return { logs: r[0] || [], meals: r[1] || [], steps: h.steps, sleep: h.sleep, sleepProvider: hasApi };
     });
   }
 
