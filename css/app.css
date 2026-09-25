@@ -256,6 +256,14 @@ fieldset.card > legend + * { clear: both; }
 .caf-form select { margin-bottom: 2px; }
 .caf-form details { margin: 8px 0; }
 .caf-form details summary { cursor: pointer; padding: 10px 0; }
+/* Batch B (B-006): neutral layout only — U-1, no warning colours on any caffeine element. */
+.caf-offer-btns { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin: 4px 0 8px; }
+.caf-offer-btns button, .caf-plan-actions button { white-space: normal; text-align: left; overflow-wrap: anywhere; }
+.caf-plan-actions { flex-wrap: wrap; margin: 8px 0; }
+.caf-plan-actions > * { flex: 0 1 auto; max-width: 100%; min-width: 0; }
+.caf-preview { font-weight: 600; margin: 8px 0; }
+.caf-late { margin: 4px 0 0; }
+.caf-status:focus:not(:focus-visible) { outline: none; }
 
 /* ---------- day nav ---------- */
 .daynav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px; }

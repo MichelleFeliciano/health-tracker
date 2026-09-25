@@ -666,23 +666,39 @@
     o.endDate = dateOrNull(r.endDate);
     if ([o.baselineMg, o.goalMg, o.currentTargetMg, o.targetSince, o.startDate, o.endDate].indexOf(undefined) >= 0) return null;
     o.history = [];
-    (Array.isArray(r.history) ? r.history : []).slice(0, PLAN_HISTORY_MAX).forEach(function (h) {
+    // A-011 item 4: keep the NEWEST PLAN_HISTORY_MAX entries (the engine drops the oldest too).
+    (Array.isArray(r.history) ? r.history : []).slice(-PLAN_HISTORY_MAX).forEach(function (h) {
       if (!h || !D.isValidDateStr(h.date) || PLAN_ACTIONS.indexOf(h.action) < 0) return;
       var from = intOrNull(h.fromMg), to = intOrNull(h.toMg);
       if (from === undefined || to === undefined) return;
       var e = { date: h.date, action: h.action, fromMg: from, toMg: to };
-      if (h.pct !== undefined) { if (PLAN_PCTS.indexOf(h.pct) < 0) return; e.pct = h.pct; }
+      // A-011 item 1: pct and goalMg are labels only (targetOn reads toMg), so an invalid one
+      // drops just that FIELD. A `pct` entry without a valid pct is meaningless and is dropped.
+      if (h.pct !== undefined) {
+        if (PLAN_PCTS.indexOf(h.pct) >= 0) e.pct = h.pct;
+        else if (h.action === 'pct') return;
+      }
+      // B-006: plan-start and goal entries also record the goal (toMg is the target).
+      if (h.goalMg !== undefined && planInt(h.goalMg)) e.goalMg = h.goalMg;
       o.history.push(e);
     });
     if (o.status === 'active') {
       if (o.baselineMg === null || o.goalMg === null || !(o.goalMg < o.baselineMg)) return null;
-      if (o.targets.length < 2 || o.targets[0] !== o.baselineMg) return null;
+      // B-006: "Go back" may return all the way to the baseline (A-010 §4), which leaves ONE
+      // target ([baselineMg]); A-010 §1.6 said ≥ 2, which would skip that valid plan on restore.
+      if (o.targets.length < 1 || o.targets[0] !== o.baselineMg) return null;
       for (var j = 1; j < o.targets.length; j++) if (!(o.targets[j] < o.targets[j - 1])) return null;
       var last = o.targets[o.targets.length - 1];
       if (!(last > o.goalMg) || o.currentTargetMg !== last) return null;
       if (o.targetSince === null || o.startDate === null) return null;
     } else if (o.status === 'done') {
       if (o.goalMg === null || o.currentTargetMg !== o.goalMg || o.startDate === null) return null;
+      // A-011 item 2: a done plan still holds a valid stack from the baseline, with the last
+      // target at or below the goal and the goal below the baseline.
+      if (o.baselineMg === null || !(o.goalMg < o.baselineMg)) return null;
+      if (o.targets.length < 2 || o.targets[0] !== o.baselineMg) return null;
+      for (var k = 1; k < o.targets.length; k++) if (!(o.targets[k] < o.targets[k - 1])) return null;
+      if (!(o.targets[o.targets.length - 1] <= o.goalMg)) return null;
     } else if (o.status === 'ended') {
       if (o.endDate === null) return null;
     }

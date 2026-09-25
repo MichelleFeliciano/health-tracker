@@ -10,6 +10,8 @@
  *  - Scaling and rounding: A-010 §2 (V6–V8: JavaScript Math.round equals exact half-up).
  *  - Baseline: A-010 §3 (V5) and decisions.md 2026-09-25 "Caffeine baseline period".
  *  - Wording W1–W3 (A-008 §5) and W12–W13 (A-010 §6) are verbatim.
+ *  - Batch B: taper plan (A-009 §3(a); A-010 §4), late-caffeine window (A-010 §5), withdrawal
+ *    marks (A-010 §10), wording W4–W11 (A-009 §3; A-010 §6), verbatim.
  * Classic script. Exposes window.HT.caffeineCore. Never logs entries.
  */
 (function (HT) {
@@ -258,7 +260,6 @@
   var BASE_TEXT = {
     n0: 'Tracking your usual amount. A day counts once it\'s over, if you logged caffeine or tapped “No caffeine today”.',
     zero: 'Your usual amount is 0 mg, so there is nothing to cut down.',
-    notYet: 'The reduction plan is coming in the next update.',
     startNow: 'Start my plan now',
     keep: 'Keep tracking to 7 days (recommended)',
     start: 'Start my plan'
@@ -288,6 +289,8 @@
     var p = newBaselinePlan(today);
     var hist = plan && Array.isArray(plan.history) ? plan.history.slice() : [];
     p.history = hist.concat(p.history);
+    // A-011 item 3: same cap as pushHist (oldest dropped), so the new baseline-start survives sanitize.
+    if (p.history.length > HISTORY_MAX) p.history.splice(0, p.history.length - HISTORY_MAX);
     if (plan && plan.createdAt) p.createdAt = plan.createdAt;
     return p;
   }
@@ -313,6 +316,334 @@
     if (typeof a.amountMl === 'number') d.amountMl = a.amountMl;
     else if (typeof a.count === 'number') d.count = a.count;
     return d;
+  }
+
+  // =====================================================================================
+  // Batch B: calendar-day arithmetic, taper plan, late-caffeine window, withdrawal marks.
+  // =====================================================================================
+
+  // ---------- calendar days (no Date objects; A-010 §4 "Week boundaries", §5) ----------
+  // Proleptic Gregorian day number of a 'YYYY-MM-DD' string (days since 1970-01-01), using
+  // integer arithmetic only (H. Hinnant's days_from_civil). Local clock changes (DST) cannot
+  // shift it, and leap days are counted exactly — the spec requires calendar-date strings only.
+  function dayNum(s) {
+    var y = +s.slice(0, 4), m = +s.slice(5, 7), d = +s.slice(8, 10);
+    if (m <= 2) y -= 1;
+    var era = Math.floor(y / 400), yoe = y - era * 400;
+    var doy = Math.floor((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1;
+    var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+    return era * 146097 + doe - 719468;
+  }
+  function pad(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
+  /** Inverse of dayNum (civil_from_days). */
+  function dateOfDayNum(n) {
+    var z = n + 719468, era = Math.floor(z / 146097), doe = z - era * 146097;
+    var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+    var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+    var mp = Math.floor((5 * doy + 2) / 153);
+    var d = doy - Math.floor((153 * mp + 2) / 5) + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    var y = yoe + era * 400 + (m <= 2 ? 1 : 0);
+    return pad(y, 4) + '-' + pad(m, 2) + '-' + pad(d, 2);
+  }
+  function daysBetween(a, b) { return dayNum(b) - dayNum(a); }
+  function addDays(s, n) { return dateOfDayNum(dayNum(s) + n); }
+
+  // ---------- approved wording, Batch B (A-009 §3; A-010 §6 table) ----------
+  // W4 plan label, W5 withdrawal note, W6 hold note, W7 end (template), W8 late notice
+  // (template), W9 bedtime hint, W10 medicines line, W11 reference wording. Verbatim.
+  TEXT.W4 = 'The weekly steps in this plan are a starting point chosen for this app, not a medically tested schedule. You can change them or pause at any time.';
+  TEXT.W5 = 'Stopping caffeine or cutting down a lot at once can cause headache, tiredness, low mood or trouble concentrating. In studies, these usually started 12 to 24 hours after stopping and lasted 2 to 9 days. The FDA suggests cutting back gradually.';
+  TEXT.W6 = 'Some people get headaches or feel tired for a few days after cutting down. You can stay at this amount for another week.';
+  TEXT.W7 = 'You\'ve reached your goal of {X} mg a day. You can change your goal at any time.';
+  TEXT.W8 = 'Logged within {N} hours of your usual bedtime. Caffeine can shorten sleep even when taken many hours before bed, and people often don\'t notice it. Larger amounts can last longer.';
+  TEXT.W9 = 'Caffeine can shorten sleep even when taken many hours before bed, and people often don\'t notice it.';
+  TEXT.W10 = 'Some medicines, including birth control pills, can slow how fast the body clears caffeine. A pharmacist can tell you whether any of yours do.';
+  TEXT.W11 = 'For healthy adults, health agencies in the US, Canada and the EU use 400 mg a day as a general reference amount that is not usually linked to negative effects. The EU agency also says up to 200 mg at one time raises no concern for healthy adults. These amounts don\'t apply during pregnancy or breastfeeding, and they are not personal limits. You choose your own daily goal.';
+  function w7(goalMg) { return TEXT.W7.replace('{X}', fmtInt(goalMg)); }
+  function w8(hours) { return TEXT.W8.replace('{N}', String(hours)); }
+
+  // ---------- taper plan (A-009 §3(a) rule, A-010 §4) ----------
+  // The weekly steps are a DESIGN CONSTANT, not evidence (A-009 §3(a); decisions.md 2026-09-25):
+  // 25% default (10/15/20/25 allowed — 30%+ can exceed a one-third cut after rounding), 10 mg
+  // minimum step, final stop from 25 mg or less, never below the goal, never automatic.
+  var PCTS = [10, 15, 20, 25];
+  var PCT_DEFAULT = 25;
+  var STEP_DAYS = 7;
+  var HISTORY_MAX = 2000;                  // same cap as sanitize (A-010 §1.6)
+  var TARGET_ACTIONS = ['plan-start', 'next', 'back', 'goal', 'done'];
+  var PLAN_MSG = {
+    goalWhole: 'Enter your goal as a whole number of mg.',
+    goalLow: 'Your goal needs to be lower than your usual amount (about {X} mg a day) for a plan to lower it.'
+  };
+  /**
+   * next(current) exactly as A-009 §3(a) rule 2: at 25 mg or less the next target is the goal;
+   * otherwise max(goal, min(round5(current × (100 − pct)/100), current − 10)), where round5 is
+   * Math.round(current*(100-pct)/500)*5 (half-up to 5 mg; equals exact arithmetic, A-010 V1–V2).
+   */
+  function nextTarget(current, goal, pct) {
+    if (current <= 25) return goal;
+    return Math.max(goal, Math.min(Math.round(current * (100 - pct) / 500) * 5, current - 10));
+  }
+  /** The whole weekly series baseline → goal (for tests and the preview). */
+  function taperSeries(baseline, goal, pct) {
+    var s = [baseline];
+    for (var i = 0; i < 1000 && s[s.length - 1] > goal; i++) s.push(nextTarget(s[s.length - 1], goal, pct));
+    return s;
+  }
+  /** Goal validation (A-010 §4): ASCII digits only, 0 ≤ goal < baselineMg. The app never suggests one. */
+  function parseGoal(text, baselineMg) {
+    var t = norm(text);
+    if (!/^[0-9]+$/.test(t)) return { ok: false, error: PLAN_MSG.goalWhole };
+    var g = Number(t);
+    if (!(g < baselineMg)) return { ok: false, error: PLAN_MSG.goalLow.replace('{X}', fmtInt(baselineMg)) };
+    return { ok: true, goal: g };
+  }
+  function clonePlan(p) { return JSON.parse(JSON.stringify(p)); }
+  function lastTarget(p) { return p.targets.length ? p.targets[p.targets.length - 1] : null; }
+  function pushHist(p, h) {
+    p.history = Array.isArray(p.history) ? p.history : [];
+    p.history.push(h);
+    if (p.history.length > HISTORY_MAX) p.history.splice(0, p.history.length - HISTORY_MAX);
+  }
+  function hist(date, action, fromMg, toMg, extra) {
+    var h = { date: date, action: action, fromMg: fromMg, toMg: toMg };
+    if (extra) Object.keys(extra).forEach(function (k) { h[k] = extra[k]; });
+    return h;
+  }
+  /** Finish: status done, current target = goal, endDate = today, history `done`. */
+  function finish(p, today, fromMg) {
+    p.status = 'done';
+    p.currentTargetMg = p.goalMg;
+    p.endDate = today;
+    pushHist(p, hist(today, 'done', fromMg, p.goalMg));
+  }
+  /**
+   * Start the plan from the baseline phase (A-010 §4 "Start"). base = baselineSummary (frozen
+   * here: baselineDays and baselineMg). goalText is validated; pct must be 10/15/20/25.
+   * targets = [baselineMg, next(baselineMg)]; if that first step already equals the goal the
+   * plan is done at once (250 → 245, 12 → 0). Returns { ok, plan } | { ok:false, error }.
+   */
+  function startPlan(plan, base, goalText, pct, today) {
+    if (!base || base.n < BASELINE_MIN || !(base.avg > 0)) return { ok: false, error: BASE_TEXT.zero };
+    var g = parseGoal(goalText, base.avg);
+    if (!g.ok) return g;
+    var p = clonePlan(plan);
+    var step = PCTS.indexOf(pct) >= 0 ? pct : PCT_DEFAULT;
+    var first = nextTarget(base.avg, g.goal, step);
+    p.status = 'active';
+    p.baselineDays = base.days.slice();
+    p.baselineMg = base.avg;
+    p.goalMg = g.goal;
+    p.pct = step;
+    p.targets = [base.avg, first];
+    p.currentTargetMg = first;
+    p.targetSince = today;
+    p.startDate = today;
+    p.endDate = null;
+    pushHist(p, hist(today, 'plan-start', base.avg, first, { pct: step, goalMg: g.goal }));
+    if (first === g.goal) finish(p, today, first);
+    return { ok: true, plan: p };
+  }
+  /** Step day: an active plan whose target took effect 7 or more calendar days ago. */
+  function stepDue(plan, today) {
+    return !!plan && plan.status === 'active' && typeof plan.targetSince === 'string' && daysBetween(plan.targetSince, today) >= STEP_DAYS;
+  }
+  /** "Next step": push next(current); reaching the goal finishes the plan (W7). */
+  function applyNext(plan, today) {
+    if (!plan || plan.status !== 'active') return { ok: false };
+    var p = clonePlan(plan), cur = p.currentTargetMg;
+    var n = nextTarget(cur, p.goalMg, p.pct);
+    p.targets.push(n);
+    p.currentTargetMg = n;
+    p.targetSince = today;
+    pushHist(p, hist(today, 'next', cur, n));
+    if (n === p.goalMg) finish(p, today, n);
+    return { ok: true, plan: p };
+  }
+  /** "Stay at this amount for another week" (also the Settings pause). Holds are unlimited. */
+  function applyStay(plan, today) {
+    if (!plan || plan.status !== 'active') return { ok: false };
+    var p = clonePlan(plan);
+    p.targetSince = today;
+    pushHist(p, hist(today, 'stay', p.currentTargetMg, p.currentTargetMg));
+    return { ok: true, plan: p };
+  }
+  /** "Go back to last week's amount": pop the stack (as far back as the baseline). */
+  function applyBack(plan, today) {
+    if (!plan || plan.status !== 'active' || plan.targets.length < 2) return { ok: false };
+    var p = clonePlan(plan);
+    var popped = p.targets.pop();
+    p.currentTargetMg = lastTarget(p);
+    p.targetSince = today;
+    pushHist(p, hist(today, 'back', popped, p.currentTargetMg));
+    return { ok: true, plan: p };
+  }
+  /** The amount "Go back" returns to, or null when there is nothing to go back to. */
+  function backTarget(plan) {
+    return plan && plan.status === 'active' && plan.targets.length >= 2 ? plan.targets[plan.targets.length - 2] : null;
+  }
+  /** Change weekly step (applies from the next step). */
+  function changePct(plan, pct, today) {
+    if (!plan || (plan.status !== 'active' && plan.status !== 'done') || PCTS.indexOf(pct) < 0) return { ok: false };
+    if (plan.pct === pct) return { ok: true, plan: plan, unchanged: true };
+    var p = clonePlan(plan);
+    p.pct = pct;
+    pushHist(p, hist(today, 'pct', p.currentTargetMg, p.currentTargetMg, { pct: pct }));
+    return { ok: true, plan: p };
+  }
+  /**
+   * What a goal change would do, before any confirm (A-010 §4 "Change goal"):
+   *  'finish'     active and goal ≥ current target → needs the confirm, then done at the goal;
+   *  'reactivate' done and goal < last target      → active again from today;
+   *  'update'     any other valid change;          'same' nothing changes.
+   */
+  function goalChangeKind(plan, g) {
+    if (!plan || (plan.status !== 'active' && plan.status !== 'done')) return null;
+    if (g === plan.goalMg) return 'same';
+    if (plan.status === 'active') return g >= plan.currentTargetMg ? 'finish' : 'update';
+    return g < lastTarget(plan) ? 'reactivate' : 'update';
+  }
+  /**
+   * Apply a validated goal. The history `goal` entry's toMg is the target after the change (so
+   * targetOn() replays it correctly) and goalMg is the new goal.
+   */
+  function changeGoal(plan, g, today) {
+    var kind = goalChangeKind(plan, g);
+    if (!kind) return { ok: false };
+    if (kind === 'same') return { ok: true, plan: plan, unchanged: true, kind: kind };
+    var p = clonePlan(plan), before = p.currentTargetMg;
+    p.goalMg = g;
+    if (kind === 'reactivate') {
+      p.status = 'active';
+      p.currentTargetMg = lastTarget(p);
+      p.targetSince = today;
+      p.endDate = null;
+    } else if (p.status === 'done') {
+      p.currentTargetMg = g;        // done means the target is the goal
+    }
+    if (kind === 'finish') {
+      pushHist(p, hist(today, 'goal', before, g, { goalMg: g }));
+      finish(p, today, g);
+    } else {
+      pushHist(p, hist(today, 'goal', before, p.currentTargetMg, { goalMg: g }));
+    }
+    return { ok: true, plan: p, kind: kind };
+  }
+  /** End plan (after a confirm): status ended, endDate today, history `end`. */
+  function endPlan(plan, today) {
+    if (!plan || (plan.status !== 'active' && plan.status !== 'done')) return { ok: false };
+    var p = clonePlan(plan);
+    var from = p.currentTargetMg === undefined ? null : p.currentTargetMg;
+    p.status = 'ended';
+    p.endDate = today;
+    pushHist(p, hist(today, 'end', from, null));
+    return { ok: true, plan: p };
+  }
+  /**
+   * The daily target on date d, for Trends (A-010 §4 "Target on date d"): replay the history in
+   * array order; the target is the toMg of the last plan-start/next/back/goal/done entry dated
+   * ≤ d. `end` and a later `baseline-start` (Start again) clear it, so there is none before the
+   * start date and none on or after the end date of an ended plan.
+   */
+  function targetOn(plan, d) {
+    if (!plan || !Array.isArray(plan.history)) return null;
+    var t = null;
+    plan.history.forEach(function (h) {
+      if (!h || !(h.date <= d)) return;
+      if (h.action === 'end' || h.action === 'baseline-start') t = null;
+      else if (TARGET_ACTIONS.indexOf(h.action) >= 0 && typeof h.toMg === 'number') t = h.toMg;
+    });
+    if (plan.status === 'ended' && typeof plan.endDate === 'string' && d >= plan.endDate) return null;
+    return t;
+  }
+  /** Today's status line for a started plan (A-010 §4 "Daily target shown"); [] otherwise. */
+  function planStatusLines(plan) {
+    if (!plan) return [];
+    if (plan.status === 'active') return ['This week\'s target: ' + fmtInt(plan.currentTargetMg) + ' mg a day'];
+    if (plan.status === 'done') return [w7(plan.goalMg), 'Your goal: ' + fmtInt(plan.goalMg) + ' mg a day'];
+    return [];
+  }
+
+  // ---------- withdrawal marks (A-010 §10) ----------
+  /** The headache/tiredness chips show while the plan is active, on dates from its start. */
+  function marksShown(plan, date) {
+    return !!plan && plan.status === 'active' && typeof plan.startDate === 'string' && date >= plan.startDate;
+  }
+  /** True when a headache or tiredness mark falls on a date in [targetSince, today]. */
+  function holdSuggested(plan, dayRecs, today) {
+    if (!plan || typeof plan.targetSince !== 'string') return false;
+    return (dayRecs || []).some(function (d) {
+      return d && d.date >= plan.targetSince && d.date <= today && (d.headache === true || d.tired === true);
+    });
+  }
+  /**
+   * The step-day offer (A-010 §4): null when not due. order is Next, Stay, Go back — or Stay,
+   * Next, Go back with the hold note W6 when a mark falls in [targetSince, today] (§10).
+   */
+  function stepOffer(plan, dayRecs, today) {
+    if (!stepDue(plan, today)) return null;
+    var hold = holdSuggested(plan, dayRecs, today);
+    var nextMg = nextTarget(plan.currentTargetMg, plan.goalMg, plan.pct);
+    var back = backTarget(plan);
+    var order = hold ? ['stay', 'next'] : ['next', 'stay'];
+    if (back !== null) order.push('back');
+    return { order: order, hold: hold, nextMg: nextMg, isGoal: nextMg === plan.goalMg, backMg: back };
+  }
+  function nextLabel(o) { return 'Next step: ' + fmtInt(o.nextMg) + ' mg a day' + (o.isGoal ? ' (your goal)' : ''); }
+  var OFFER_TEXT = {
+    stay: 'Stay at this amount for another week',
+    back: 'Go back to last week\'s amount'
+  };
+
+  // ---------- plan history table (Settings) ----------
+  var HIST_WHAT = {
+    'baseline-start': 'Started tracking your usual amount',
+    'plan-start': 'Plan started',
+    next: 'Next step',
+    stay: 'Stayed at this amount for another week',
+    back: 'Went back to last week\'s amount',
+    goal: 'Goal changed',
+    pct: 'Weekly step changed',
+    done: 'Reached your goal',
+    end: 'Plan ended'
+  };
+  /** Rows { date, what, amount } in history order. */
+  function historyRows(plan) {
+    return (plan && Array.isArray(plan.history) ? plan.history : []).map(function (h) {
+      var what = HIST_WHAT[h.action] || h.action;
+      if (h.action === 'plan-start' && typeof h.fromMg === 'number') what += ' from about ' + fmtInt(h.fromMg) + ' mg a day';
+      if ((h.action === 'plan-start' || h.action === 'goal') && typeof h.goalMg === 'number') what += (h.action === 'goal' ? ' to ' : ', goal ') + fmtInt(h.goalMg) + ' mg a day';
+      if ((h.action === 'pct' || h.action === 'plan-start') && typeof h.pct === 'number') what += (h.action === 'pct' ? ' to ' : ', weekly step ') + h.pct + '%';
+      var amount = typeof h.toMg === 'number' && h.action !== 'end' && h.action !== 'baseline-start' ? 'Target ' + fmtInt(h.toMg) + ' mg a day' : '—';
+      return { date: h.date, what: what, amount: amount };
+    });
+  }
+
+  // ---------- late-caffeine window (A-010 §5; A-009 §3(b)) ----------
+  // Wall-clock arithmetic with no Date objects. A bedtime before 12:00 is read as after
+  // midnight and belongs to the evening before (bedAbs adds a day). The window runs from
+  // N hours before bedtime to 4 h after it (D1: the person is still up before that night's
+  // sleep). Windows are at most 16 h long, so an entry matches at most one evening (V9).
+  // On DST nights the clock hours differ from elapsed time by up to 1 h (documented limit).
+  function minutesOf(t) { return +t.slice(0, 2) * 60 + +t.slice(3, 5); }
+  function isHHMM(t) { return typeof t === 'string' && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t); }
+  function bedAbs(eDay, B) { return eDay * 1440 + B + (B < 720 ? 1440 : 0); }
+  /** The evening E ('YYYY-MM-DD') whose late window contains date/time, or null. */
+  function lateEvening(date, time, bedtime, cutoffHours) {
+    if (!isHHMM(bedtime) || !isHHMM(time)) return null;
+    var B = minutesOf(bedtime), n = dayNum(date), x = n * 1440 + minutesOf(time);
+    for (var e = n - 1; e <= n; e++) {
+      var b = bedAbs(e, B);
+      if (x >= b - 60 * cutoffHours && x < b + 240) return dateOfDayNum(e);
+    }
+    return null;
+  }
+  /** An entry gets the W8 note when a bedtime is set, mg > 0 and it falls in a late window. */
+  function isLateEntry(entry, settings) {
+    var s = settings || {};
+    if (!entry || !(entry.mg > 0) || !isHHMM(s.caffeineBedtime)) return false;
+    var hours = typeof s.caffeineCutoffHours === 'number' ? s.caffeineCutoffHours : 8;
+    return lateEvening(entry.date, entry.time, s.caffeineBedtime, hours) !== null;
   }
 
   HT.caffeineCore = {
@@ -355,6 +686,40 @@
     newBaselinePlan: newBaselinePlan,
     restartBaseline: restartBaseline,
     entryFromDrink: entryFromDrink,
-    drinkFromEntry: drinkFromEntry
+    drinkFromEntry: drinkFromEntry,
+    // Batch B
+    PCTS: PCTS,
+    PCT_DEFAULT: PCT_DEFAULT,
+    STEP_DAYS: STEP_DAYS,
+    PLAN_MSG: PLAN_MSG,
+    OFFER_TEXT: OFFER_TEXT,
+    dayNum: dayNum,
+    dateOfDayNum: dateOfDayNum,
+    daysBetween: daysBetween,
+    addDays: addDays,
+    w7: w7,
+    w8: w8,
+    nextTarget: nextTarget,
+    taperSeries: taperSeries,
+    parseGoal: parseGoal,
+    startPlan: startPlan,
+    stepDue: stepDue,
+    applyNext: applyNext,
+    applyStay: applyStay,
+    applyBack: applyBack,
+    backTarget: backTarget,
+    changePct: changePct,
+    goalChangeKind: goalChangeKind,
+    changeGoal: changeGoal,
+    endPlan: endPlan,
+    targetOn: targetOn,
+    planStatusLines: planStatusLines,
+    marksShown: marksShown,
+    holdSuggested: holdSuggested,
+    stepOffer: stepOffer,
+    nextLabel: nextLabel,
+    historyRows: historyRows,
+    lateEvening: lateEvening,
+    isLateEntry: isLateEntry
   };
 })(window.HT = window.HT || {});
