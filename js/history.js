@@ -45,12 +45,16 @@
 
     function hardToTell(l, key) { return Array.isArray(l.hardToTell) && l.hardToTell.indexOf(key) >= 0; }
 
+    // Ratings drawn as dot rows (see dotRows); the rest of the day is summarised in text.
+    var DOT_KEYS = ['mood', 'energy'];
+
     // T001-10: "Hard to tell" is an answer, so it is listed ("Mood: hard to tell").
     function summary(d) {
       var parts = [];
       var l = d.log;
       if (l) {
         (HT.today ? HT.today.METRICS : []).forEach(function (m) {
+          if (DOT_KEYS.indexOf(m.key) >= 0) return;
           if (typeof l[m.key] === 'number') parts.push(m.name + ' ' + l[m.key]);
           else if (hardToTell(l, m.key)) parts.push(m.name + ': hard to tell');
         });
@@ -58,7 +62,30 @@
       if (d.meals.length) parts.push(d.meals.length + (d.meals.length === 1 ? ' meal' : ' meals'));
       if (l && l.tags && l.tags.length) parts.push(l.tags.map(tagLabel).join(', '));
       if (l && l.notes) parts.push('has notes');
-      return parts.length ? parts.join(' · ') : 'Nothing filled in';
+      return parts.length ? parts.join(' · ') : '';
+    }
+
+    /**
+     * Mood and energy as 10 small dots each (value n fills n dots), one calm colour per rating,
+     * never coloured by value: ratings have no cut-offs. The name and number are written out,
+     * so the dots are decoration only (aria-hidden).
+     */
+    function dotRows(d) {
+      var l = d.log;
+      if (!l) return [];
+      var rows = [];
+      (HT.today ? HT.today.METRICS : []).forEach(function (m) {
+        if (DOT_KEYS.indexOf(m.key) < 0) return;
+        var v = l[m.key];
+        if (typeof v === 'number') {
+          var dots = el('span', { class: 'h-dots', 'aria-hidden': 'true' });
+          for (var i = 1; i <= 10; i++) dots.appendChild(el('span', { class: i <= v ? 'on' : '' }));
+          rows.push(el('div', { class: 'h-rating h-' + m.key }, [el('span', { class: 'h-name', text: m.name + ' ' + v }), dots]));
+        } else if (hardToTell(l, m.key)) {
+          rows.push(el('div', { class: 'h-rating h-' + m.key }, [el('span', { class: 'h-name', text: m.name + ': hard to tell' })]));
+        }
+      });
+      return rows;
     }
 
     /** A day with nothing left in it (everything cleared, no meals) is not listed. */
@@ -95,11 +122,13 @@
         ? filtered.length + (filtered.length === 1 ? ' day matches.' : ' days match.')
         : days.length + (days.length === 1 ? ' day logged.' : ' days logged.');
       filtered.slice(0, shown).forEach(function (d) {
+        var rows = dotRows(d);
         listEl.appendChild(el('li', null, [
           el('a', { href: d.date === today ? '#today' : '#day/' + d.date }, [
-            el('div', { class: 'h-date', text: D.formatRelative(d.date, today) }),
-            el('div', { class: 'h-sum', text: summary(d) })
-          ])
+            el('div', { class: 'h-date', text: D.formatRelative(d.date, today) })
+          ].concat(rows, [
+            el('div', { class: 'h-sum', text: summary(d) || (rows.length ? '' : 'Nothing filled in') })
+          ]))
         ]));
       });
       moreBtn.hidden = filtered.length <= shown;

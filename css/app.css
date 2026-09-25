@@ -274,14 +274,31 @@ fieldset.card > legend + * { clear: both; }
 
 /* ---------- meals ---------- */
 .meal-list { list-style: none; margin: 0; padding: 0; }
+/* Each meal is a small card: time badge, details, then Edit / Delete. */
 .meal-list li {
   display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;
-  padding: 10px 0; border-bottom: 1px solid var(--surface-2);
+  padding: 12px 14px; margin: 10px 0;
+  background: var(--surface); border: 1px solid var(--surface-2); border-left: 4px solid var(--sage-line);
+  border-radius: 16px; box-shadow: var(--shadow);
 }
-.meal-list li:last-child { border-bottom: none; }
+.meal-list li.muted { background: none; border: 1px dashed var(--sage-line); box-shadow: none; font-style: italic; }
 .meal-main { flex: 1 1 180px; }
 .meal-main strong { font-variant-numeric: tabular-nums; }
-.meal-form { border: 2px solid var(--surface-2); border-radius: var(--radius); padding: 12px; margin: 10px 0; background: var(--bg); }
+.meal-time {
+  display: inline-block; margin: 0 6px 4px 0; padding: 2px 10px; border-radius: 999px;
+  background: var(--sage-soft); color: var(--sage); border: 1px solid var(--sage-line);
+}
+.meal-actions button { min-height: var(--tap); padding: 6px 14px; font-size: 0.95rem; }
+/* The Add / Edit meal form: a soft card with a sage top edge. */
+.meal-form {
+  border: 1px solid var(--surface-2); border-top: 4px solid var(--sage-line);
+  border-radius: var(--radius); padding: 14px 16px 16px; margin: 12px 0;
+  background: var(--surface); box-shadow: var(--shadow);
+}
+.meal-form > label:first-child { margin-top: 0; }
+.meal-form legend { font-family: var(--font-display); font-size: 1.05rem; }
+.meal-form .seg .choice span { border-radius: 999px; background: var(--bg); }
+.meal-form .seg .choice input:checked + span { background: var(--accent); }
 .seg { display: flex; gap: 6px; flex-wrap: wrap; }
 .seg .choice { flex: 1 1 80px; min-width: 0; }
 /* T001-12: long labels wrap instead of overflowing at large text sizes on narrow screens. */
@@ -319,6 +336,15 @@ fieldset.card > legend + * { clear: both; }
 .caf-late { margin: 4px 0 0; }
 .caf-status:focus:not(:focus-visible) { outline: none; }
 
+/* ---------- leaf sprig between Today's sections (decorative) ---------- */
+.today-view > section + section::before {
+  content: ""; display: block; width: 110px; height: 33px; margin: 24px auto 0;
+  background: var(--sage-line);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 36' fill='black'%3E%3Cpath d='M8 30H112' stroke='black' stroke-width='1.4' stroke-linecap='round' fill='none'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-35%29'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-145%29'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-90%29 scale%28.85%29'/%3E%3Ccircle cx='34' cy='30' r='2.2'/%3E%3Ccircle cx='86' cy='30' r='2.2'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 36' fill='black'%3E%3Cpath d='M8 30H112' stroke='black' stroke-width='1.4' stroke-linecap='round' fill='none'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-35%29'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-145%29'/%3E%3Cpath d='M0 0C6-8 17-8 24 0C17 8 6 8 0 0Z' transform='translate%2860 30%29 rotate%28-90%29 scale%28.85%29'/%3E%3Ccircle cx='34' cy='30' r='2.2'/%3E%3Ccircle cx='86' cy='30' r='2.2'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.today-view > section:empty::before { display: none; }
+
 /* ---------- day nav ---------- */
 .daynav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px; }
 .daynav h2 { margin: 0; font-size: 1.15rem; text-align: center; flex: 1; }
@@ -332,8 +358,19 @@ fieldset.card > legend + * { clear: both; }
   color: var(--text); text-decoration: none;
 }
 .history-list a:hover, .history-list a:focus-visible { background: var(--surface-2); }
-.history-list .h-date { font-weight: 700; }
+.history-list a { border: 1px solid var(--surface-2); border-left: 4px solid var(--sage-line); box-shadow: var(--shadow); padding: 14px 16px; }
+.history-list .h-date { font-family: var(--font-display); font-weight: 600; font-size: 1.1rem; margin-bottom: 4px; }
 .history-list .h-sum { color: var(--muted); font-size: 0.93rem; }
+.history-list .h-sum:empty { display: none; }
+/* Mood / energy dot rows: one colour per rating, never coloured by value (no cut-offs). */
+.h-rating { display: flex; align-items: center; gap: 10px; margin: 3px 0; font-size: 0.93rem; }
+.h-name { flex: 0 0 5.5em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.h-name:only-child { flex: 1 1 auto; }
+.h-dots { display: inline-flex; gap: 4px; }
+.h-dots span { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--dot); }
+.h-dots span.on { background: var(--dot); }
+.h-mood { --dot: var(--accent); }
+.h-energy { --dot: var(--sage-line); }
 
 .placeholder { text-align: center; padding: 40px 12px; color: var(--muted); }
 

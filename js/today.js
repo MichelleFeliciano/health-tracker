@@ -85,7 +85,7 @@
 
     // ---------- layout ----------
     var windowText = isToday ? 'today, so far' : 'on this day';
-    var root = el('div');
+    var root = el('div', { class: 'today-view' });
     container.appendChild(root);
 
     // Day navigation
@@ -239,13 +239,13 @@
       var s = settingsNow();
       meals.forEach(function (m) {
         var main = el('div', { class: 'meal-main' }, [
-          el('strong', { text: D.formatTime(m.time) }), ' ',
+          el('strong', { class: 'meal-time', text: D.formatTime(m.time) }), ' ',
           el('span', { text: mealSummary(m) }),
           m.note ? el('div', { class: 'small muted', text: m.note }) : null
         ]);
         var li = el('li', null, [
           main,
-          el('div', { class: 'row' }, [
+          el('div', { class: 'row meal-actions' }, [
             el('button', { type: 'button', text: 'Edit', 'aria-label': 'Edit meal at ' + D.formatTime(m.time), onclick: function () { openForm(m); } }),
             el('button', { type: 'button', class: 'danger', text: 'Delete', 'aria-label': 'Delete meal at ' + D.formatTime(m.time), onclick: function () { removeMeal(m); } })
           ])
