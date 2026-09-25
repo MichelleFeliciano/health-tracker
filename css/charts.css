@@ -5,23 +5,23 @@
  * line is dashed AND labelled, and every chart has a text summary and a data table.
  */
 :root {
-  --chart-bar: #1d4ed8;        /* same as --accent in light: 6.7:1 on white */
-  --chart-line: #1d4ed8;
-  --chart-grid: #d1d5db;
-  --chart-axis: #6b7280;
-  --chart-tick: #374151;
-  --chart-ref: #374151;
-  --chart-hatch-bg: #ffffff;
+  --chart-bar: #9a4b3d;        /* same as --accent in light: 6.0:1 on --bg */
+  --chart-line: #9a4b3d;
+  --chart-grid: #e2cfc0;
+  --chart-axis: #8f7466;
+  --chart-tick: #5c4640;
+  --chart-ref: #5c4640;
+  --chart-hatch-bg: #f4e9df;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --chart-bar: #93c5fd;
-    --chart-line: #93c5fd;
-    --chart-grid: #374151;
-    --chart-axis: #9ca3af;
-    --chart-tick: #d1d5db;
-    --chart-ref: #e5e7eb;
-    --chart-hatch-bg: #161b26;
+    --chart-bar: #eaa99a;
+    --chart-line: #eaa99a;
+    --chart-grid: #43342d;
+    --chart-axis: #a8907f;
+    --chart-tick: #dcc9bb;
+    --chart-ref: #eadbd0;
+    --chart-hatch-bg: #2a201c;
   }
 }
 
@@ -50,7 +50,7 @@
 
 .chart-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.88rem; color: var(--muted); }
 .chart-legend li { display: inline-flex; align-items: center; gap: 6px; }
-.swatch { display: inline-block; width: 16px; height: 12px; border-radius: 2px; flex: 0 0 auto; }
+.swatch { display: inline-block; width: 16px; height: 14px; border-radius: 4px; flex: 0 0 auto; }
 .sw-bar { background: var(--chart-bar); }
 .sw-partial {
   border: 1.5px dashed var(--chart-bar);

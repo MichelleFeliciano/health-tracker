@@ -4,22 +4,26 @@
  * System fonts only (no web fonts).
  */
 :root {
-  --bg: #ffffff;
-  --surface: #f3f4f6;
-  --surface-2: #e5e7eb;
-  --text: #111827;
-  --muted: #374151;          /* 10.3:1 on white */
-  --border: #6b7280;
-  --accent: #1d4ed8;         /* 6.7:1 on white */
+  /* Boho theme: warm cream, terracotta rose, plum focus. All pairs re-checked (WCAG AA). */
+  --bg: #fbf6f0;             /* cream */
+  --surface: #f4e9df;        /* sand */
+  --surface-2: #e8d6c8;      /* clay */
+  --text: #3b2a25;           /* cocoa, 13:1 on --bg */
+  --muted: #5c4640;          /* 8.5:1 on --bg */
+  --border: #8f7466;         /* 4.1:1 on --bg (>= 3:1) */
+  --accent: #9a4b3d;         /* terracotta rose, 6.0:1 on --bg */
   --accent-text: #ffffff;
-  --accent-soft: #dbeafe;
-  --notice-bg: #fef3c7;
-  --notice-border: #92400e;
-  --notice-text: #451a03;
-  --danger: #b91c1c;
-  --ok: #166534;
-  --focus: #b45309;          /* T001-04: 5.0:1 on white, 4.6:1 on --surface (>= 3:1) */
-  --radius: 12px;
+  --accent-soft: #f3dcd3;    /* blush */
+  --notice-bg: #f7ebcb;
+  --notice-border: #8a5a14;
+  --notice-text: #3d2606;
+  --danger: #a12a22;
+  --ok: #3f6a37;             /* sage */
+  --focus: #6f4a8e;          /* plum, 7.3:1 on --bg, 6.6:1 on --surface (>= 3:1) */
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --glow: rgba(214, 150, 128, 0.22);
+  --shadow: 0 1px 2px rgba(92, 60, 45, 0.06), 0 4px 14px rgba(92, 60, 45, 0.07);
+  --radius: 20px;
   --tap: 44px;
   --nav-h: 60px;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -31,21 +35,23 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0b0f17;
-    --surface: #161b26;
-    --surface-2: #232a38;
-    --text: #f3f4f6;
-    --muted: #d1d5db;
-    --border: #9ca3af;
-    --accent: #93c5fd;        /* light blue on dark, 10:1 */
-    --accent-text: #0b0f17;
-    --accent-soft: #1e3a5f;
-    --notice-bg: #3b2a06;
-    --notice-border: #fbbf24;
-    --notice-text: #fef3c7;
-    --danger: #fca5a5;
-    --ok: #86efac;
-    --focus: #f59e0b;        /* 8.9:1 on --bg */
+    --bg: #1e1714;           /* espresso */
+    --surface: #2a201c;
+    --surface-2: #3a2d27;
+    --text: #f7ece3;
+    --muted: #dcc9bb;
+    --border: #a8907f;
+    --accent: #eaa99a;        /* dusty rose, 8.6:1 on --bg */
+    --accent-text: #2a1a16;
+    --accent-soft: #4d2f28;
+    --notice-bg: #3a2a0b;
+    --notice-border: #e0b050;
+    --notice-text: #f7ebcb;
+    --danger: #f4a39a;
+    --ok: #a9d19b;
+    --focus: #cfb0e6;        /* lavender, 9.6:1 on --bg */
+    --glow: rgba(234, 169, 154, 0.10);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -63,7 +69,7 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--bg) radial-gradient(120% 60% at 50% -10%, var(--glow), transparent 70%) no-repeat;
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 1.0625rem;     /* 17px at the default 16px; scales with browser text size (T001-12) */
@@ -93,7 +99,16 @@ body {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 12px 16px 4px;
 }
-.app-header h1 { font-size: 1.35rem; margin: 0; }
+.app-header h1 {
+  font-family: var(--font-display); font-size: 1.7rem; font-weight: 600; letter-spacing: 0.01em;
+  margin: 0; display: flex; align-items: center; gap: 10px;
+}
+/* Boho rainbow arch beside the screen title (decorative; drawn in the accent colour). */
+.app-header h1::before {
+  content: ""; flex: 0 0 auto; width: 30px; height: 18px; background: var(--accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 18' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M2 17a13 13 0 0 1 26 0M7 17a8 8 0 0 1 16 0M12 17a3 3 0 0 1 6 0'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 18' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M2 17a13 13 0 0 1 26 0M7 17a8 8 0 0 1 16 0M12 17a3 3 0 0 1 6 0'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 .save-status { font-size: 0.95rem; color: var(--muted); min-height: 1.4em; }
 .save-status.ok { color: var(--ok); }
 .save-status.err { color: var(--danger); font-weight: 600; }
@@ -101,17 +116,20 @@ body {
 main { padding: 0 16px; max-width: 720px; margin: 0 auto; }
 main:focus { outline: none; }
 
-h2 { font-size: 1.2rem; margin: 20px 0 8px; }
-h3 { font-size: 1.05rem; margin: 16px 0 6px; }
+h1, h2, h3, legend { font-family: var(--font-display); }
+h2 { font-size: 1.3rem; font-weight: 600; margin: 24px 0 8px; }
+h3 { font-size: 1.1rem; font-weight: 600; margin: 16px 0 6px; }
 p { margin: 8px 0; }
 .muted { color: var(--muted); }
 .small { font-size: 0.9rem; }
 
 .card {
   background: var(--surface);
+  border: 1px solid var(--surface-2);
   border-radius: var(--radius);
-  padding: 14px;
-  margin: 12px 0;
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin: 14px 0;
 }
 
 /* ---------- bottom tab nav ---------- */
@@ -119,7 +137,8 @@ p { margin: 8px 0; }
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
   display: flex;
   background: var(--surface);
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--surface-2);
+  box-shadow: 0 -4px 16px rgba(92, 60, 45, 0.08);
   padding-bottom: var(--safe-bottom);
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
@@ -130,7 +149,8 @@ p { margin: 8px 0; }
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   color: var(--muted); text-decoration: none; font-size: 0.78rem; font-weight: 600;
 }
-.tabbar a svg { width: 24px; height: 24px; }
+.tabbar a svg { width: 24px; height: 24px; padding: 2px 14px; box-sizing: content-box; border-radius: 999px; }
+.tabbar a[aria-current="page"] svg { background: var(--accent-soft); }
 .tabbar a[aria-current="page"] { color: var(--accent); }
 .tabbar a[aria-current="page"] span { text-decoration: underline; text-underline-offset: 3px; }
 
@@ -140,7 +160,7 @@ button, .btn, input, select, textarea { font: inherit; color: inherit; }
 button, .btn {
   min-height: var(--tap); min-width: var(--tap);
   padding: 8px 16px;
-  border-radius: 10px;
+  border-radius: 999px;
   border: 2px solid var(--border);
   background: var(--bg);
   cursor: pointer;
@@ -158,7 +178,7 @@ input[type="date"], input[type="file"], select, textarea {
   width: 100%;
   padding: 8px 10px;
   border: 2px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   background: var(--bg);
 }
 input[type="file"] { padding: 6px; }
@@ -193,7 +213,7 @@ fieldset.card > legend + * { clear: both; }
 .choice span {
   display: flex; align-items: center; justify-content: center;
   min-height: var(--tap);
-  border: 2px solid var(--border); border-radius: 10px;
+  border: 2px solid var(--border); border-radius: 14px;
   background: var(--bg);
   font-weight: 700; font-variant-numeric: tabular-nums;
   cursor: pointer; user-select: none;
@@ -209,8 +229,8 @@ fieldset.card > legend + * { clear: both; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
   min-height: var(--tap);
-  border-radius: 22px;
-  padding: 8px 14px;
+  border-radius: 999px;
+  padding: 8px 16px;
   border: 2px solid var(--border);
   background: var(--bg);
   font-weight: 600;
@@ -227,7 +247,7 @@ fieldset.card > legend + * { clear: both; }
 .meal-list li:last-child { border-bottom: none; }
 .meal-main { flex: 1 1 180px; }
 .meal-main strong { font-variant-numeric: tabular-nums; }
-.meal-form { border: 2px solid var(--border); border-radius: var(--radius); padding: 12px; margin: 10px 0; background: var(--bg); }
+.meal-form { border: 2px solid var(--surface-2); border-radius: var(--radius); padding: 12px; margin: 10px 0; background: var(--bg); }
 .seg { display: flex; gap: 6px; flex-wrap: wrap; }
 .seg .choice { flex: 1 1 80px; min-width: 0; }
 /* T001-12: long labels wrap instead of overflowing at large text sizes on narrow screens. */
@@ -246,7 +266,7 @@ fieldset.card > legend + * { clear: both; }
 }
 .notice p { margin: 4px 0; }
 .banner { background: var(--accent-soft); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; }
-.disclaimer { font-size: 0.88rem; color: var(--muted); border-top: 1px solid var(--surface-2); margin-top: 24px; padding-top: 10px; }
+.disclaimer { font-size: 0.88rem; font-style: italic; color: var(--muted); border-top: 1px dashed var(--border); margin-top: 24px; padding-top: 10px; }
 
 /* ---------- caffeine (A-010 §6, U-1: neutral only — no notice/danger/focus colours) ---------- */
 .caf-total { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -294,5 +314,6 @@ fieldset.card > legend + * { clear: both; }
 /* ---------- print ---------- */
 @media print {
   .tabbar, .skip-link, .save-status, button { display: none !important; }
-  body { padding: 0; }
+  body { padding: 0; background: #fff; }
+  .card { box-shadow: none; }
 }
