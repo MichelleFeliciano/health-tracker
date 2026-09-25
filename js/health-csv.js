@@ -7,6 +7,7 @@
  *  - every data row has exactly 7 fields; timestamps ISO 8601 with offset or Z only;
  *  - the meta row is validated by COUNT (exactly one), not by position;
  *  - steps: strip every non-digit; blank = missing (null); 0 with meta count 0 = "suspect";
+ *    a decimal mark ('.' or ',' + 1–2 trailing digits) = missing (A-007 N-1);
  *  - the day comes from the content, never the file name;
  *  - re-import of day D replaces steps(D) and the Shortcut sleep samples whose start lies
  *    inside the meta window AS WRITTEN in the file (never recomputed: DST nights differ).
@@ -79,7 +80,7 @@
 
   /**
    * Parse one Shortcut file's text. Returns
-   *  { ok:true, day, status, steps, stepsSuspect, meta:{startMs,endMs,startText,endText,count,generatedAt},
+   *  { ok:true, day, status, steps, stepsSuspect, stepsDecimal, meta:{startMs,endMs,startText,endText,count,generatedAt},
    *    sleep:[{stage,label,startMs,endMs,source}], unknownStages }
    * or { ok:false, error }. status: 'ok' | 'nothing' (steps empty and 0 sleep samples:
    * import nothing, R-002 §4.1.2).
@@ -120,7 +121,13 @@
     }
 
     // Steps: strip every non-digit (A-002 item 12). Blank = missing.
-    var digits = stepsRows[0].fields[5].replace(/\D/g, '');
+    // A-007 N-1: a '.' or ',' followed by exactly 1–2 trailing digits is a DECIMAL mark
+    // ("10234.0", "10234,50"), not grouping; stripping it would give a 10× or 100× count, so
+    // the step count is stored as missing. Grouping ("10,234", "10.234", "1.234.567") always
+    // has 3 digits after the separator and is still read as a whole number.
+    var rawSteps = stepsRows[0].fields[5].trim();
+    var stepsDecimal = /[.,][0-9]{1,2}$/.test(rawSteps);
+    var digits = stepsDecimal ? '' : rawSteps.replace(/\D/g, '');
     var steps = digits === '' ? null : Number(digits);
     if (steps !== null && (!isFinite(steps) || steps > MAX_STEPS)) return fail('The step count is not a plausible number. Nothing was imported.');
 
@@ -139,6 +146,7 @@
     return {
       ok: true, day: day, status: status, steps: steps,
       stepsSuspect: steps === 0 && count === 0,
+      stepsDecimal: stepsDecimal,
       meta: { startMs: ws, endMs: we, startText: mf[3], endText: mf[4], count: count, generatedAt: mf[6] },
       sleep: sleep, unknownStages: unknown
     };

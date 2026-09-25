@@ -516,7 +516,9 @@
   }
 
   function exportSummaryLines(s) {
-    var lines = ['Imported ' + plural(s.days, 'day') + (s.from ? ' (' + s.from + ' to ' + s.to + ')' : '') + '.'];
+    // T005-01: a one-day export prints its date once ("(2026-04-12)"), not "(D to D)".
+    var span = !s.from ? '' : (s.from === s.to ? ' (' + s.from + ')' : ' (' + s.from + ' to ' + s.to + ')');
+    var lines = ['Imported ' + plural(s.days, 'day') + span + '.'];
     lines.push(plural(s.stepDays, 'day') + ' with steps, ' + plural(s.nights, 'night') + ' of sleep' +
       (s.inBedOnly ? ', ' + plural(s.inBedOnly, 'night') + ' with time in bed only' : '') +
       (s.napOnly ? ', ' + plural(s.napOnly, 'day') + ' with only a nap' : '') + '.');
@@ -545,12 +547,14 @@
     r.results.forEach(function (x) {
       var p = x.parsed;
       if (!p.ok) lines.push(x.name + ': ' + p.error);
+      else if (p.status === 'nothing' && p.stepsDecimal) lines.push(x.name + ': the step count looked like a decimal number, so it was not used, and the file has no sleep. Nothing was imported.');
       else if (p.status === 'nothing') lines.push(x.name + ': No Health data in this file (was the phone locked?). Run the Shortcut again after unlocking.');
       else {
         var bits = [];
         if (x.superseded) bits.push('an older copy of ' + p.day + ', not used');
         if (x.olderThanSaved) bits.push('older copy skipped: a newer Shortcut file for ' + p.day + ' is already imported');
-        if (p.steps === null) bits.push('no step count, so steps for ' + p.day + ' stay missing');
+        if (p.stepsDecimal) bits.push('the step count looked like a decimal number, so steps for ' + p.day + ' stay missing');
+        else if (p.steps === null) bits.push('no step count, so steps for ' + p.day + ' stay missing');
         if (p.stepsSuspect) bits.push('0 steps and no sleep: kept but marked “check this day”');
         if (p.unknownStages) bits.push(plural(p.unknownStages, 'sleep stage') + ' not recognised (kept, not counted as sleep)');
         if (bits.length) lines.push(x.name + ': ' + bits.join('; ') + '.');
@@ -563,7 +567,7 @@
     return el('details', { style: 'margin-top:8px' }, [
       el('summary', { text: 'How sleep and steps are worked out' }),
       el('ul', { class: 'small' }, [
-        el('li', { text: 'Steps: each minute is counted once, from the highest source in your priority list, as the Health app does. Totals can still differ slightly from the Health app.' }),
+        el('li', { text: 'Steps: each minute is counted once, from the highest source in your priority list (the Health app also prefers the source at the top of its list). Totals can still differ slightly from the Health app.' }),
         el('li', { text: 'When a Shortcut file and the full export both cover a day, the Shortcut’s step count is shown, but for sleep the full export’s night is shown (it knows manual entries and which device recorded). If the export has only a nap or only time in bed for that day, the Shortcut’s night is shown, together with the export’s nap or time in bed. Both are kept.' }),
         el('li', { text: 'A Shortcut file older than one already imported for the same day is skipped.' }),
         el('li', { text: 'A full export made before one you already imported is only applied if you confirm, because it replaces newer sleep and steps for the days it covers.' }),
@@ -582,6 +586,7 @@
     importExport: importExport,
     importCsvFiles: importCsvFiles,
     exportSummaryLines: exportSummaryLines,
+    csvSummaryLines: csvSummaryLines,
     isOlderExport: isOlderExport,
     MSG_OLDER_EXPORT: MSG_OLDER_EXPORT,
     MSG_OLDER_DECLINED: MSG_OLDER_DECLINED,

@@ -22,6 +22,7 @@
       'Talk with a qualified health professional about health questions and before changing any treatment.'
   };
 
+  var CAFFEINE_OLD_BACKUP = 'This backup was made before caffeine tracking, so it has no caffeine entries, drinks or plan.';
   var NUDGE_DAYS = 7;
   var MAX_BACKUP_BYTES = 100 * 1024 * 1024;
 
@@ -101,6 +102,8 @@
   function replaceConfirmText(prep) {
     var q = 'Replace all: this erases every entry on this device and loads only the backup file (' +
       HT.db.describeRecordCounts(prep.counts) + ').';
+    // D8 (A-010 §1.8): a pre-caffeine backup (schema 1–3) wipes the device's caffeine data.
+    if (typeof prep.fromSchema === 'number' && prep.fromSchema < 4) q += '\n\n' + CAFFEINE_OLD_BACKUP;
     if (prep.skipped) {
       q += '\n\n' + prep.skipped + (prep.skipped === 1 ? ' record in the file is' : ' records in the file are') +
         ' unreadable or duplicated and will NOT be restored.';
@@ -231,6 +234,14 @@
     }
     drawRange();
 
+    // ---------- caffeine (owned by js/caffeine-ui.js, A-010 §6) ----------
+    var cafCard = el('section', { class: 'card' });
+    var caf = null;
+    if (HT.caffeineUI && typeof HT.caffeineUI.renderSettingsCard === 'function') {
+      container.appendChild(cafCard);
+      try { caf = HT.caffeineUI.renderSettingsCard(cafCard); } catch (e) { cafCard.remove(); }
+    }
+
     // ---------- backup ----------
     var statusP = el('p', { text: backupStatusText() });
     container.appendChild(el('section', { class: 'card', 'aria-labelledby': 'bk-h' }, [
@@ -298,6 +309,7 @@
           s = JSON.parse(JSON.stringify(ns));
           drawRange();
           Array.prototype.forEach.call(unitFs.querySelectorAll('input'), function (i) { i.checked = i.value === s.glucoseUnit; });
+          if (caf) caf.refresh();
         });
       }).catch(function (e) {
         result.appendChild(el('p', { class: 'field-error', text: (e && e.name === 'QuotaExceededError') ? 'Not enough storage space to restore.' : 'Restore failed. Nothing may have changed; try again.' }));
@@ -345,6 +357,7 @@
 
     return function () {
       alive = false;
+      if (caf) { try { caf.cleanup(); } catch (e) { /* ignore */ } }
       if (typeof importCleanup === 'function') { try { importCleanup(); } catch (e) { /* ignore */ } }
     };
   }
@@ -358,6 +371,7 @@
     backupStatusText: backupStatusText,
     rangeOrderOk: rangeOrderOk,            // exposed for tests (A-005 R1-3)
     replaceConfirmText: replaceConfirmText, // exposed for tests (A-005 R1-1/R1-2)
-    replaceResultText: replaceResultText
+    replaceResultText: replaceResultText,
+    CAFFEINE_OLD_BACKUP: CAFFEINE_OLD_BACKUP
   };
 })(window.HT = window.HT || {});

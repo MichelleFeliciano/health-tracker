@@ -248,6 +248,15 @@ fieldset.card > legend + * { clear: both; }
 .banner { background: var(--accent-soft); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; }
 .disclaimer { font-size: 0.88rem; color: var(--muted); border-top: 1px solid var(--surface-2); margin-top: 24px; padding-top: 10px; }
 
+/* ---------- caffeine (A-010 §6, U-1: neutral only — no notice/danger/focus colours) ---------- */
+.caf-total { font-weight: 600; font-variant-numeric: tabular-nums; }
+.caf-status { margin: 6px 0; }
+.caf-quick { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.caf-quick-btn { justify-content: flex-start; text-align: left; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+.caf-form select { margin-bottom: 2px; }
+.caf-form details { margin: 8px 0; }
+.caf-form details summary { cursor: pointer; padding: 10px 0; }
+
 /* ---------- day nav ---------- */
 .daynav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 8px; }
 .daynav h2 { margin: 0; font-size: 1.15rem; text-align: center; flex: 1; }

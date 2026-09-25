@@ -17,6 +17,10 @@
  *  sleepSamples  key       origin|stage|startMs|endMs|source   (ms = UTC epoch)
  *  settings      key       "settings" (singleton)
  *  tombstones    key       store + '|' + recordKey   { store, id, deletedAt }
+ *  caffeine       id       UUID                          (v4; index 'date')
+ *  caffeineDays   date     "YYYY-MM-DD"                  (v4; per-day marks)
+ *  caffeineDrinks id       UUID                          (v4; "My drinks")
+ *  caffeinePlan   key      "plan" (singleton)            (v4)
  *
  *  Record shapes (schema 3):
  *  meals       { id, date, time "HH:MM", carb low|med|high|null,
@@ -28,8 +32,18 @@
  *  healthDays  { key, date, origin, kind, asleepMin, …SLEEP_DAY_FIELDS…, updatedAt }
  *  settings    { key, glucoseUnit, rangeLowMgdl, rangeHighMgdl, rangeNoticeOn,
  *                sourcePriority { steps: [{key, cls, name}] | null, sleep: … } | null,
- *                lastExportDate ISO UTC | null, updatedAt }
+ *                lastExportDate ISO UTC | null,
+ *                caffeineBedtime 'HH:MM' | null, caffeineCutoffHours int 4–12, caffeineVolumeUnit 'fl oz'|'mL',
+ *                updatedAt }
  *              lastExportDate = the latest <ExportDate> of any full export imported (A-006 RC-1).
+ *  caffeine       { id, date, time 'HH:MM', presetId|null, label, amountMl?|amountG?|count?, mg int,
+ *                   source 'preset:<id>'|'user', checkedDate|null, createdAt, updatedAt }
+ *                 mg is a SNAPSHOT taken at logging time, never recomputed (A-008 RC-6).
+ *  caffeineDays   { date, none, headache, tired, updatedAt }  (never stored all-false)
+ *  caffeineDrinks { id, label, presetId|null, amountMl?|count?, mg int, createdAt, updatedAt }
+ *  caffeinePlan   { key:'plan', status, baselineStartDate, baselineDays, baselineMg, goalMg, pct,
+ *                   targets, currentTargetMg, targetSince, startDate, endDate, history, createdAt, updatedAt }
+ *  Caffeine rules: docs/team/analysis/A-010-caffeine-spec.md §1.
  *
  *  Schema history (backup schemaVersion; IndexedDB DB_VERSION uses the same numbers):
  *  1  first release
@@ -37,6 +51,8 @@
  *  3  meals[].glucose.minutesAfter (optional int 0–720, A-005 Part 2); healthDays store
  *     (full-export per-day sleep moved out of `steps`); settings.sourcePriority (moved out of
  *     localStorage so backups include it) — decisions.md 2026-09-23 "Schema v3"
+ *  4  caffeine, caffeineDays, caffeineDrinks, caffeinePlan stores; settings.caffeineBedtime,
+ *     caffeineCutoffHours, caffeineVolumeUnit (A-010 §1; decisions.md 2026-09-25)
  *
  * Classic script. Exposes window.HT.db. Never logs record contents.
  */
@@ -46,21 +62,25 @@
   var D = HT.dates;
 
   var DB_NAME_DEFAULT = 'health-tracker';
-  var DB_VERSION = 3;          // IndexedDB version (2: rangeNoticeOn; 3: healthDays store — see header)
-  var SCHEMA_VERSION = 3;      // backup-file / record schema version (see "Schema history" above)
+  var DB_VERSION = 4;          // IndexedDB version (2: rangeNoticeOn; 3: healthDays; 4: caffeine — see header)
+  var SCHEMA_VERSION = 4;      // backup-file / record schema version (see "Schema history" above)
   // 3: meals[].glucose.minutesAfter (optional int 0–720)
   var APP_ID = 'health-tracker';
   var MINUTES_AFTER_MAX = 720; // typo guard only (A-005 Part 2), never shown as guidance: 12 h
 
-  var STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples', 'settings', 'tombstones'];
-  var EDITABLE = ['dailyLog', 'meals', 'settings'];     // user-edited: putEditable / removeEditable
-  var LWW = ['dailyLog', 'meals', 'settings', 'healthDays']; // last-write-wins + tombstones in merge
+  var CAFFEINE_STORES = ['caffeine', 'caffeineDays', 'caffeineDrinks', 'caffeinePlan'];   // schema 4 (A-010 §1.1)
+  var STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples'].concat(CAFFEINE_STORES).concat(['settings', 'tombstones']);
+  var EDITABLE = ['dailyLog', 'meals', 'settings'].concat(CAFFEINE_STORES);   // user-edited: putEditable / removeEditable
+  var LWW = ['dailyLog', 'meals', 'settings', 'healthDays'].concat(CAFFEINE_STORES); // last-write-wins + tombstones in merge
   var IMPORTED = ['steps', 'sleepSamples'];              // immutable in backup merge (add-only)
-  var KEY_PATH = { dailyLog: 'date', meals: 'id', steps: 'key', healthDays: 'key', sleepSamples: 'key', settings: 'key', tombstones: 'key' };
+  var KEY_PATH = { dailyLog: 'date', meals: 'id', steps: 'key', healthDays: 'key', sleepSamples: 'key',
+    caffeine: 'id', caffeineDays: 'date', caffeineDrinks: 'id', caffeinePlan: 'key', settings: 'key', tombstones: 'key' };
   // What counts as "data" for the Replace-all guard, its confirm and its result message
   // (A-005 R1-1/R1-2): days, meals, steps and sleep records only. Settings and tombstones are
   // never counted as data. countDataRecords() is the ONE function all three use.
-  var DATA_COUNT_STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples'];
+  // Schema 4 (A-010 §1.7): caffeine entries and caffeine day notes are data; saved drinks and
+  // the plan are reported separately (like settings) and never make a file count as data.
+  var DATA_COUNT_STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples', 'caffeine', 'caffeineDays'];
 
   var RATINGS = ['anxiety', 'mood', 'energy', 'stress'];
   var TAGS = ['sensory', 'schedule-change', 'social', 'work-school', 'caregiving', 'other'];
@@ -99,8 +119,24 @@
     // migration 3 and sanitize.settings fill it with null. Raised only by putExportDays and by
     // a merge (the later of the two); raising it never stamps updatedAt (not a user edit).
     lastExportDate: null,
+    // Caffeine (schema 4, A-010 §1.5). Bedtime is null until the user sets it (the late-caffeine
+    // note is shown only after that, decisions.md 2026-09-25). Cut-off 8 h, adjustable 4–12
+    // (A-009 §3). Volume unit fl oz by default (D9).
+    caffeineBedtime: null,
+    caffeineCutoffHours: 8,
+    caffeineVolumeUnit: 'fl oz',
     updatedAt: EPOCH_ISO
   };
+  var CAFFEINE_UNITS = ['fl oz', 'mL'];
+  var CAFFEINE_CUTOFF_MIN = 4, CAFFEINE_CUTOFF_MAX = 12, CAFFEINE_CUTOFF_DEFAULT = 8;
+  var CAFFEINE_MG_MAX = 3000;          // per-entry typo guard (D7), never shown as guidance
+  var PLAN_MG_MAX = 20000;             // plan integers (A-010 §1.6)
+  var PLAN_STATUSES = ['baseline', 'active', 'done', 'ended'];
+  var PLAN_PCTS = [10, 15, 20, 25];
+  var PLAN_ACTIONS = ['baseline-start', 'plan-start', 'next', 'stay', 'back', 'goal', 'pct', 'done', 'end'];
+  var PLAN_HISTORY_MAX = 2000;
+  var ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+  var PRESET_ID_RE = /^[a-z0-9-]{1,40}$/;
 
   // ---------- keys ----------
   var keys = {
@@ -182,6 +218,33 @@
       // migration 2's get/put and this get run in the same transaction, and this get returns
       // the record as it was before migration 2's put, so this put must carry
       // rangeNoticeOn:false too or it would undo migration 2 (found by the LB1 v1→v2 test).
+      var os = tx.objectStore('settings');
+      var r = os.get('settings');
+      r.onsuccess = function () {
+        var s = r.result;
+        if (!s) return;
+        var changed = false;
+        Object.keys(SETTINGS_DEFAULTS).forEach(function (k) {
+          if (k === 'updatedAt' || Object.prototype.hasOwnProperty.call(s, k)) return;
+          s[k] = SETTINGS_DEFAULTS[k]; changed = true;
+        });
+        if (typeof s.rangeNoticeOn !== 'boolean') { s.rangeNoticeOn = false; changed = true; }
+        if (changed) os.put(s);
+      };
+    },
+    // v4 (schema 4, A-010 §1.7): the four caffeine stores, and the three caffeine settings.
+    // Settings: fill EVERY missing default field, exactly like migration 3. When upgrading from
+    // v1 or v2, migrations 2, 3 and 4 all issue get('settings') before any put runs, so every
+    // get sees the original record (the stale-read trap above); this put runs last and must
+    // carry every field, or it would undo the earlier migrations. updatedAt is left unchanged
+    // (a schema fill-in, not a user edit).
+    4: function (db, tx) {
+      var c = db.objectStoreNames.contains('caffeine') ? tx.objectStore('caffeine')
+        : db.createObjectStore('caffeine', { keyPath: 'id' });
+      if (!c.indexNames.contains('date')) c.createIndex('date', 'date', { unique: false });
+      if (!db.objectStoreNames.contains('caffeineDays')) db.createObjectStore('caffeineDays', { keyPath: 'date' });
+      if (!db.objectStoreNames.contains('caffeineDrinks')) db.createObjectStore('caffeineDrinks', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('caffeinePlan')) db.createObjectStore('caffeinePlan', { keyPath: 'key' });
       var os = tx.objectStore('settings');
       var r = os.get('settings');
       r.onsuccess = function () {
@@ -447,7 +510,15 @@
     out.rangeNoticeOn = out.rangeNoticeOn === true;
     out.sourcePriority = sanitizePriority(out.sourcePriority);
     out.lastExportDate = D.isIso(out.lastExportDate) ? out.lastExportDate : null;
+    normalizeCaffeineSettings(out, out);
     return JSON.parse(JSON.stringify(out));
+  }
+  /** A-010 §1.5: invalid bedtime → null, invalid cut-off → 8, invalid unit → 'fl oz'. */
+  function normalizeCaffeineSettings(src, out) {
+    out.caffeineBedtime = D.isValidTime(src.caffeineBedtime) ? src.caffeineBedtime : null;
+    out.caffeineCutoffHours = isIntIn(src.caffeineCutoffHours, CAFFEINE_CUTOFF_MIN, CAFFEINE_CUTOFF_MAX) ? src.caffeineCutoffHours : CAFFEINE_CUTOFF_DEFAULT;
+    out.caffeineVolumeUnit = CAFFEINE_UNITS.indexOf(src.caffeineVolumeUnit) >= 0 ? src.caffeineVolumeUnit : 'fl oz';
+    return out;
   }
   function getSettings() {
     return get('settings', 'settings').then(function (s) {
@@ -530,6 +601,96 @@
   function str(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
   function isoOr(v, fallback) { return D.isIso(v) ? v : fallback; }
 
+  // ---------- caffeine record helpers (A-010 §1.2–1.6) ----------
+  var CAFFEINE_AMOUNT_KEYS = ['amountMl', 'amountG', 'count'];
+  var DRINK_AMOUNT_KEYS = ['amountMl', 'count'];
+  /** Amount with at most 1 decimal in [lo, hi] (A-010 §1.2); returns the value to store or null. */
+  function tenth(v, lo, hi) {
+    if (typeof v !== 'number' || !isFinite(v) || v < lo || v > hi) return null;
+    if (Math.abs(v * 10 - Math.round(v * 10)) >= 1e-9) return null;
+    return Math.round(v * 10) / 10;
+  }
+  /** Count in halves, 0.5–20 (v*2 is an integer). */
+  function halfCount(v) {
+    if (typeof v !== 'number' || !isFinite(v) || v < 0.5 || v > 20) return null;
+    return Math.floor(v * 2) === v * 2 ? v : null;
+  }
+  var AMOUNT_CHECK = {
+    amountMl: function (v) { return tenth(v, 0.1, 3000); },
+    amountG: function (v) { return tenth(v, 0.1, 1000); },
+    count: halfCount
+  };
+  /** label, presetId, mg and the ONE amount key shared by entries and drinks (§1.2, §1.4). */
+  function cleanCaffeineCommon(r, o, amountKeys) {
+    // An unknown but well-formed presetId is KEPT (a backup from a newer build, RC-6).
+    o.presetId = (typeof r.presetId === 'string' && PRESET_ID_RE.test(r.presetId)) ? r.presetId : null;
+    var label = typeof r.label === 'string' ? r.label.trim().slice(0, 80) : '';
+    o.label = label || 'Caffeine';
+    // Keep the FIRST valid amount key in the order amountMl, amountG, count; drop the others.
+    // No valid amount = unknown amount; the record is still kept.
+    for (var i = 0; i < amountKeys.length; i++) {
+      var v = AMOUNT_CHECK[amountKeys[i]](r[amountKeys[i]]);
+      if (v !== null) { o[amountKeys[i]] = v; break; }
+    }
+    o.mg = r.mg;
+    return o;
+  }
+  function planInt(v) { return isIntIn(v, 0, PLAN_MG_MAX); }
+  /** null/absent → null; a valid value → itself; anything else → undefined (= reject). */
+  function intOrNull(v) { return v === null || v === undefined ? null : (planInt(v) ? v : undefined); }
+  function dateOrNull(v) { return v === null || v === undefined ? null : (D.isValidDateStr(v) ? v : undefined); }
+  /**
+   * The plan singleton (§1.6). Any failed rule → null (record skipped: a Merge keeps the device
+   * plan; a Replace leaves no plan). pct falls back to 25; bad history entries are dropped one
+   * by one.
+   */
+  function sanitizePlan(r) {
+    if (!r || typeof r !== 'object' || r.key !== 'plan') return null;
+    if (PLAN_STATUSES.indexOf(r.status) < 0 || !D.isValidDateStr(r.baselineStartDate)) return null;
+    var o = { key: 'plan', status: r.status, baselineStartDate: r.baselineStartDate };
+    var bd = r.baselineDays === undefined || r.baselineDays === null ? [] : r.baselineDays;
+    if (!Array.isArray(bd) || bd.length > 7) return null;
+    for (var i = 0; i < bd.length; i++) {
+      if (!D.isValidDateStr(bd[i]) || (i > 0 && !(bd[i] > bd[i - 1]))) return null;   // valid, distinct, sorted
+    }
+    o.baselineDays = bd.slice();
+    o.baselineMg = intOrNull(r.baselineMg);
+    o.goalMg = intOrNull(r.goalMg);
+    o.pct = PLAN_PCTS.indexOf(r.pct) >= 0 ? r.pct : 25;
+    var tg = r.targets === undefined || r.targets === null ? [] : r.targets;
+    if (!Array.isArray(tg) || !tg.every(planInt)) return null;
+    o.targets = tg.slice();
+    o.currentTargetMg = intOrNull(r.currentTargetMg);
+    o.targetSince = dateOrNull(r.targetSince);
+    o.startDate = dateOrNull(r.startDate);
+    o.endDate = dateOrNull(r.endDate);
+    if ([o.baselineMg, o.goalMg, o.currentTargetMg, o.targetSince, o.startDate, o.endDate].indexOf(undefined) >= 0) return null;
+    o.history = [];
+    (Array.isArray(r.history) ? r.history : []).slice(0, PLAN_HISTORY_MAX).forEach(function (h) {
+      if (!h || !D.isValidDateStr(h.date) || PLAN_ACTIONS.indexOf(h.action) < 0) return;
+      var from = intOrNull(h.fromMg), to = intOrNull(h.toMg);
+      if (from === undefined || to === undefined) return;
+      var e = { date: h.date, action: h.action, fromMg: from, toMg: to };
+      if (h.pct !== undefined) { if (PLAN_PCTS.indexOf(h.pct) < 0) return; e.pct = h.pct; }
+      o.history.push(e);
+    });
+    if (o.status === 'active') {
+      if (o.baselineMg === null || o.goalMg === null || !(o.goalMg < o.baselineMg)) return null;
+      if (o.targets.length < 2 || o.targets[0] !== o.baselineMg) return null;
+      for (var j = 1; j < o.targets.length; j++) if (!(o.targets[j] < o.targets[j - 1])) return null;
+      var last = o.targets[o.targets.length - 1];
+      if (!(last > o.goalMg) || o.currentTargetMg !== last) return null;
+      if (o.targetSince === null || o.startDate === null) return null;
+    } else if (o.status === 'done') {
+      if (o.goalMg === null || o.currentTargetMg !== o.goalMg || o.startDate === null) return null;
+    } else if (o.status === 'ended') {
+      if (o.endDate === null) return null;
+    }
+    o.createdAt = isoOr(r.createdAt, EPOCH_ISO);
+    o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
+    return o;
+  }
+
   var sanitize = {
     dailyLog: function (r) {
       if (!r || !D.isValidDateStr(r.date)) return null;
@@ -574,9 +735,40 @@
       o.rangeNoticeOn = r.rangeNoticeOn === true;
       o.sourcePriority = sanitizePriority(r.sourcePriority);
       o.lastExportDate = D.isIso(r.lastExportDate) ? r.lastExportDate : null;
+      normalizeCaffeineSettings(r, o);
       o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
       return o;
     },
+    // ----- caffeine (schema 4, A-010 §1.2–1.6) -----
+    caffeine: function (r) {
+      if (!r || typeof r.id !== 'string' || !ID_RE.test(r.id)) return null;
+      if (!D.isValidDateStr(r.date) || !D.isValidTime(r.time)) return null;
+      if (!isIntIn(r.mg, 0, CAFFEINE_MG_MAX)) return null;
+      var o = { id: r.id, date: r.date, time: r.time };
+      cleanCaffeineCommon(r, o, CAFFEINE_AMOUNT_KEYS);
+      o.source = (o.presetId !== null && r.source === 'preset:' + o.presetId) ? r.source : 'user';
+      o.checkedDate = D.isValidDateStr(r.checkedDate) ? r.checkedDate : null;
+      o.createdAt = isoOr(r.createdAt, EPOCH_ISO);
+      o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
+      return o;
+    },
+    caffeineDays: function (r) {
+      if (!r || !D.isValidDateStr(r.date)) return null;
+      var o = { date: r.date, none: r.none === true, headache: r.headache === true, tired: r.tired === true };
+      if (!o.none && !o.headache && !o.tired) return null;   // never stored all-false (§1.3)
+      o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
+      return o;
+    },
+    caffeineDrinks: function (r) {
+      if (!r || typeof r.id !== 'string' || !ID_RE.test(r.id)) return null;
+      if (!isIntIn(r.mg, 0, CAFFEINE_MG_MAX)) return null;
+      var o = { id: r.id };
+      cleanCaffeineCommon(r, o, DRINK_AMOUNT_KEYS);   // amountG is not allowed on a drink (§1.4)
+      o.createdAt = isoOr(r.createdAt, EPOCH_ISO);
+      o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
+      return o;
+    },
+    caffeinePlan: function (r) { return sanitizePlan(r); },
     // Per-day sleep from the full export (schema v3). Whitelisted fields only; the key is
     // recomputed from date + origin. Only origin 'export' exists in this store (A-006 RC-3):
     // a 'shortcut' healthDay would never be read and no import could ever remove it.
@@ -640,7 +832,11 @@
         if (moved.length) b.stores.healthDays = (Array.isArray(b.stores.healthDays) ? b.stores.healthDays : []).concat(moved);
       }
       return b;
-    }
+    },
+    // v3 -> v4 (A-010 §1.7): pass-through. The four caffeine stores are missing and become
+    // empty arrays; sanitize.settings fills the caffeine settings with their defaults. In a
+    // Merge, planMerge keeps the device's caffeine settings when such a record wins (fromSchema).
+    4: function (b) { return b; }
   };
 
   /**
@@ -648,15 +844,19 @@
    * stores = clean store arrays. Counts days, meals, step days, full-export sleep days and
    * sleep samples; settings are reported separately and never make a file count as data;
    * tombstones are not counted at all.
-   * Returns { total, byStore: { dailyLog, meals, steps, healthDays, sleepSamples }, settings }.
+   * Schema 4 (A-010 §1.7): caffeine entries and caffeine day notes are data; saved drinks and
+   * the plan are returned as `drinks` and `plan`, outside the total (like settings).
+   * Returns { total, byStore: { dailyLog, meals, steps, healthDays, sleepSamples, caffeine,
+   *   caffeineDays }, settings, drinks, plan }.
    */
   function countDataRecords(stores) {
     var byStore = {}, total = 0;
+    function len(s) { return stores && Array.isArray(stores[s]) ? stores[s].length : 0; }
     DATA_COUNT_STORES.forEach(function (s) {
-      var n = stores && Array.isArray(stores[s]) ? stores[s].length : 0;
+      var n = len(s);
       byStore[s] = n; total += n;
     });
-    return { total: total, byStore: byStore, settings: stores && Array.isArray(stores.settings) ? stores.settings.length : 0 };
+    return { total: total, byStore: byStore, settings: len('settings'), drinks: len('caffeineDrinks'), plan: len('caffeinePlan') };
   }
 
   var COUNT_LABELS = {
@@ -664,16 +864,20 @@
     meals: ['meal', 'meals'],
     steps: ['day of steps', 'days of steps'],
     healthDays: ['day of sleep from the full export', 'days of sleep from the full export'],
-    sleepSamples: ['sleep record from the Shortcut', 'sleep records from the Shortcut']
+    sleepSamples: ['sleep record from the Shortcut', 'sleep records from the Shortcut'],
+    caffeine: ['caffeine entry', 'caffeine entries'],
+    caffeineDays: ['caffeine day note', 'caffeine day notes']
   };
   function fmtCount(n) { try { return Number(n).toLocaleString('en-US'); } catch (e) { return String(n); } }
-  /** Text for a countDataRecords() result, e.g. "12 daily logs, 30 meals, settings". */
+  /** Text for a countDataRecords() result, e.g. "12 daily logs, 30 meals, 2 saved drinks, caffeine plan, settings". */
   function describeRecordCounts(c) {
     var parts = [];
     DATA_COUNT_STORES.forEach(function (s) {
       var n = c.byStore[s];
       if (n) parts.push(fmtCount(n) + ' ' + COUNT_LABELS[s][n === 1 ? 0 : 1]);
     });
+    if (c.drinks) parts.push(fmtCount(c.drinks) + (c.drinks === 1 ? ' saved drink' : ' saved drinks'));
+    if (c.plan) parts.push('caffeine plan');
     if (c.settings) parts.push('settings');
     return parts.length ? parts.join(', ') : 'nothing';
   }
@@ -744,7 +948,11 @@
    *    (the file is schema 1/2, which never carried an order), the device's sourcePriority is
    *    kept (A-006 RC-2 / T004-02). lastExportDate always ends as the later of the two (A-006
    *    RC-1): it describes data the device now holds, so a merge never moves it backwards.
-   * opts = { legacySettings: boolean } (optional).
+   *  - generalised in schema 4 (A-010 §1.7): opts.fromSchema = the file's schema. When an
+   *    incoming settings record wins and fromSchema < 4, the device's caffeineBedtime,
+   *    caffeineCutoffHours and caffeineVolumeUnit are kept; when fromSchema < 3, also its
+   *    sourcePriority (legacySettings:true is the older spelling of fromSchema < 3).
+   * opts = { fromSchema: int, legacySettings: boolean } (optional; absent = current schema).
    * Returns { puts:{store:[rec]}, deletes:{store:[key]}, counts:{added,updated,deleted,unchanged} }.
    */
   function planMerge(existing, incoming, opts) {
@@ -810,7 +1018,9 @@
       var v;
       if (win.incoming) {
         v = JSON.parse(JSON.stringify(win.v));
-        if (opts.legacySettings && exR) v.sourcePriority = exR.sourcePriority === undefined ? null : exR.sourcePriority;
+        var from = isIntIn(opts.fromSchema, 1, 1000000) ? opts.fromSchema : SCHEMA_VERSION;
+        if ((opts.legacySettings || from < 3) && exR) v.sourcePriority = exR.sourcePriority === undefined ? null : exR.sourcePriority;
+        if (from < 4 && exR) normalizeCaffeineSettings(exR, v);   // device's caffeine settings kept
         v.lastExportDate = later;
         return { kind: 'rec', v: v, t: win.t, incoming: true };
       }
@@ -886,11 +1096,112 @@
       });
     }
     return snapshot().then(function (ex) {
-      var plan = planMerge(ex, inc, { legacySettings: prep.fromSchema < 3 });
+      var plan = planMerge(ex, inc, { fromSchema: prep.fromSchema });
       return applyPlan(plan).then(function () {
         return { ok: true, mode: 'merge', counts: plan.counts, skipped: prep.skipped };
       });
     });
+  }
+
+  // ---------- caffeine API (schema 4, A-010 §1) ----------
+  function byTime(a, b) {
+    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+    return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  }
+  function getCaffeineForDate(date) {
+    return getAllByIndex('caffeine', 'date', date).then(function (list) { return list.sort(byTime); });
+  }
+  function getCaffeineDay(date) { return get('caffeineDays', date); }
+  /** Entries and day marks with start <= date <= end, read in ONE transaction. */
+  function getCaffeineRange(start, end) {
+    return withTx(['caffeine', 'caffeineDays'], 'readonly', function (tx) {
+      var range = IDBKeyRange.bound(start, end);
+      return Promise.all([
+        reqP(tx.objectStore('caffeine').index('date').getAll(range)),
+        reqP(tx.objectStore('caffeineDays').getAll(range))
+      ]).then(function (r) { return { entries: r[0].sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : byTime(a, b); }), days: r[1] }; });
+    });
+  }
+  /**
+   * Save a caffeine entry (stamps updatedAt, createdAt if new; clears its tombstone). In the SAME
+   * transaction the day's "No caffeine" mark is cleared (A-010 §1.3): none becomes false, and the
+   * day record is deleted with a tombstone when headache and tired are also false.
+   */
+  function saveCaffeineEntry(entry) {
+    var copy = JSON.parse(JSON.stringify(entry));
+    if (!copy.id) copy.id = newId();
+    var now = D.nowIso();
+    if (!D.isIso(copy.createdAt)) copy.createdAt = now;
+    copy.updatedAt = now;
+    return withTx(['caffeine', 'caffeineDays', 'tombstones'], 'readwrite', function (tx) {
+      tx.objectStore('caffeine').put(copy);
+      var tb = tx.objectStore('tombstones');
+      tb.delete(keys.tombstone('caffeine', copy.id));
+      var days = tx.objectStore('caffeineDays');
+      var g = days.get(copy.date);
+      g.onsuccess = function () {
+        var d = g.result;
+        if (!d || d.none !== true) return;
+        if (d.headache === true || d.tired === true) {
+          days.put({ date: d.date, none: false, headache: d.headache === true, tired: d.tired === true, updatedAt: now });
+        } else {
+          days.delete(d.date);
+          tb.put({ key: keys.tombstone('caffeineDays', d.date), store: 'caffeineDays', id: d.date, deletedAt: now });
+        }
+      };
+      return copy;
+    });
+  }
+  function deleteCaffeineEntry(id) { return removeEditable('caffeine', id); }
+  /**
+   * Change a day's marks (patch of none/headache/tired booleans) read-modify-write in one
+   * transaction. An all-false result is never stored: the record is deleted with a tombstone
+   * (only when one existed). Resolves the stored record or null.
+   */
+  function setCaffeineDay(date, patch) {
+    return withTx(['caffeineDays', 'tombstones'], 'readwrite', function (tx) {
+      var days = tx.objectStore('caffeineDays'), tb = tx.objectStore('tombstones');
+      return new Promise(function (resolve, reject) {
+        var g = days.get(date);
+        g.onerror = function () { reject(g.error); };
+        g.onsuccess = function () {
+          var cur = g.result || {}, now = D.nowIso();
+          var rec = { date: date, none: cur.none === true, headache: cur.headache === true, tired: cur.tired === true };
+          ['none', 'headache', 'tired'].forEach(function (k) { if (patch && typeof patch[k] === 'boolean') rec[k] = patch[k]; });
+          if (!rec.none && !rec.headache && !rec.tired) {
+            if (g.result) {
+              days.delete(date);
+              tb.put({ key: keys.tombstone('caffeineDays', date), store: 'caffeineDays', id: date, deletedAt: now });
+            }
+            resolve(null);
+            return;
+          }
+          rec.updatedAt = now;
+          days.put(rec);
+          tb.delete(keys.tombstone('caffeineDays', date));
+          resolve(rec);
+        };
+      });
+    });
+  }
+  function getCaffeineDrinks() {
+    return getAll('caffeineDrinks').then(function (list) {
+      return list.sort(function (a, b) { return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : (a.id < b.id ? -1 : 1); });
+    });
+  }
+  function saveCaffeineDrink(d) {
+    var copy = JSON.parse(JSON.stringify(d));
+    if (!copy.id) copy.id = newId();
+    if (!D.isIso(copy.createdAt)) copy.createdAt = D.nowIso();
+    return putEditable('caffeineDrinks', copy);
+  }
+  function deleteCaffeineDrink(id) { return removeEditable('caffeineDrinks', id); }
+  function getCaffeinePlan() { return get('caffeinePlan', 'plan'); }
+  function saveCaffeinePlan(p) {
+    var copy = JSON.parse(JSON.stringify(p));
+    copy.key = 'plan';
+    if (!D.isIso(copy.createdAt)) copy.createdAt = D.nowIso();
+    return putEditable('caffeinePlan', copy);
   }
 
   HT.db = {
@@ -948,6 +1259,26 @@
     planMerge: planMerge,
     snapshot: snapshot,
     exportAll: exportAll,
-    importBackup: importBackup
+    importBackup: importBackup,
+    // caffeine (schema 4)
+    CAFFEINE_STORES: CAFFEINE_STORES,
+    CAFFEINE_UNITS: CAFFEINE_UNITS,
+    CAFFEINE_MG_MAX: CAFFEINE_MG_MAX,
+    CAFFEINE_CUTOFF_MIN: CAFFEINE_CUTOFF_MIN,
+    CAFFEINE_CUTOFF_MAX: CAFFEINE_CUTOFF_MAX,
+    PLAN_PCTS: PLAN_PCTS,
+    PLAN_ACTIONS: PLAN_ACTIONS,
+    sanitizePlan: sanitizePlan,
+    getCaffeineForDate: getCaffeineForDate,
+    getCaffeineDay: getCaffeineDay,
+    getCaffeineRange: getCaffeineRange,
+    saveCaffeineEntry: saveCaffeineEntry,
+    deleteCaffeineEntry: deleteCaffeineEntry,
+    setCaffeineDay: setCaffeineDay,
+    getCaffeineDrinks: getCaffeineDrinks,
+    saveCaffeineDrink: saveCaffeineDrink,
+    deleteCaffeineDrink: deleteCaffeineDrink,
+    getCaffeinePlan: getCaffeinePlan,
+    saveCaffeinePlan: saveCaffeinePlan
   };
 })(window.HT = window.HT || {});

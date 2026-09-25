@@ -106,10 +106,14 @@
     var ratingsSec = el('section', { 'aria-labelledby': 'feel-h' }, [el('h2', { id: 'feel-h', text: 'How it went' })]);
     var tagsSec = el('section', { 'aria-labelledby': 'tags-h' });
     var mealsSec = el('section', { 'aria-labelledby': 'meals-h' });
+    // Caffeine (A-010 §6): owned by js/caffeine-ui.js; this file only mounts it after Meals.
+    var cafSec = el('section', { class: 'caf-section' });
+    var cafCleanup = null;
     var notesSec = el('section', { 'aria-labelledby': 'notes-h' });
     root.appendChild(ratingsSec);
     root.appendChild(tagsSec);
     root.appendChild(mealsSec);
+    root.appendChild(cafSec);
     root.appendChild(notesSec);
     root.appendChild(el('p', { class: 'disclaimer', text: 'A personal log, not medical advice. Ratings are for spotting your own patterns and have no cut-offs.' }));
 
@@ -407,6 +411,9 @@
       buildNotes();
       meals = res[1];
       renderMeals();
+      if (HT.caffeineUI && typeof HT.caffeineUI.mountDay === 'function') {
+        try { cafCleanup = HT.caffeineUI.mountDay(cafSec, { date: date, today: today }); } catch (e) { cafSec.textContent = ''; }
+      }
     }).catch(function () {
       if (!alive) return;
       root.appendChild(el('div', { class: 'notice', role: 'alert' }, [el('p', { text: 'Could not load this day. Try reloading.' })]));
@@ -415,6 +422,7 @@
     return function cleanupToday() {
       flush();
       alive = false;
+      if (typeof cafCleanup === 'function') { try { cafCleanup(); } catch (e) { /* ignore */ } }
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('pagehide', flush);
     };

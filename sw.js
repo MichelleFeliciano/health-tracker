@@ -9,7 +9,7 @@
 'use strict';
 
 var CACHE_PREFIX = 'health-tracker-';
-var CACHE_VERSION = CACHE_PREFIX + 'v6';
+var CACHE_VERSION = CACHE_PREFIX + 'v7';
 var LEGACY_CACHES = ['ht-v1', 'ht-v2'];   // this app's own old names; never match other apps' caches
 
 var CORE = [
@@ -20,6 +20,8 @@ var CORE = [
   'js/units.js',
   'js/dates.js',
   'js/db.js',
+  'js/caffeine-core.js',
+  'js/caffeine-ui.js',
   'js/today.js',
   'js/history.js',
   'js/settings.js',
