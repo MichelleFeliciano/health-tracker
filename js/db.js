@@ -5,15 +5,36 @@
  *   - every user-editable record has updatedAt (ISO UTC); deletes leave a tombstone
  *   - merge: newer updatedAt wins; tie keeps the existing record; tombstones propagate
  *   - imported health records (steps, sleepSamples) are immutable in merge
+ *   - healthDays (per-day sleep from the full export) are last-write-wins by updatedAt with
+ *     tombstones; merge key date + ':' + origin (Architect brief, schema v3)
  *   - backup file { app, schemaVersion, exportedAt, stores } with version check + migration
  *
  *  Store         keyPath   key value
  *  dailyLog      date      "YYYY-MM-DD" (local)
  *  meals         id        UUID (crypto.randomUUID, getRandomValues fallback)
  *  steps         key       date + ':' + origin           (origin: shortcut | export)
+ *  healthDays    key       date + ':' + origin           (v3; origin: export)
  *  sleepSamples  key       origin|stage|startMs|endMs|source   (ms = UTC epoch)
  *  settings      key       "settings" (singleton)
  *  tombstones    key       store + '|' + recordKey   { store, id, deletedAt }
+ *
+ *  Record shapes (schema 3):
+ *  meals       { id, date, time "HH:MM", carb low|med|high|null,
+ *                glucose { value, unit, minutesAfter? } | null, note, createdAt, updatedAt }
+ *              minutesAfter = integer 0–720: minutes from the start of the meal to the reading,
+ *              as reported by the user. The key is ABSENT when unknown (never null, never
+ *              guessed) — A-005 Part 2.
+ *  steps       { key, date, origin, value int|null, ...importer fields }   (steps only)
+ *  healthDays  { key, date, origin, kind, asleepMin, …SLEEP_DAY_FIELDS…, updatedAt }
+ *  settings    { key, glucoseUnit, rangeLowMgdl, rangeHighMgdl, rangeNoticeOn,
+ *                sourcePriority { steps: [{key, cls, name}] | null, sleep: … } | null, updatedAt }
+ *
+ *  Schema history (backup schemaVersion; IndexedDB DB_VERSION uses the same numbers):
+ *  1  first release
+ *  2  settings.rangeNoticeOn (T001-13)
+ *  3  meals[].glucose.minutesAfter (optional int 0–720, A-005 Part 2); healthDays store
+ *     (full-export per-day sleep moved out of `steps`); settings.sourcePriority (moved out of
+ *     localStorage so backups include it) — decisions.md 2026-09-23 "Schema v3"
  *
  * Classic script. Exposes window.HT.db. Never logs record contents.
  */
@@ -23,15 +44,21 @@
   var D = HT.dates;
 
   var DB_NAME_DEFAULT = 'health-tracker';
-  var DB_VERSION = 2;          // IndexedDB version (2: settings.rangeNoticeOn, T001-13)
-  var SCHEMA_VERSION = 2;      // backup-file / record schema version (2: settings.rangeNoticeOn)
+  var DB_VERSION = 3;          // IndexedDB version (2: rangeNoticeOn; 3: healthDays store — see header)
+  var SCHEMA_VERSION = 3;      // backup-file / record schema version (see "Schema history" above)
+  // 3: meals[].glucose.minutesAfter (optional int 0–720)
   var APP_ID = 'health-tracker';
+  var MINUTES_AFTER_MAX = 720; // typo guard only (A-005 Part 2), never shown as guidance: 12 h
 
-  var STORES = ['dailyLog', 'meals', 'steps', 'sleepSamples', 'settings', 'tombstones'];
-  var DATA_STORES = ['dailyLog', 'meals', 'steps', 'sleepSamples', 'settings'];
-  var EDITABLE = ['dailyLog', 'meals', 'settings'];     // last-write-wins + tombstones
-  var IMPORTED = ['steps', 'sleepSamples'];              // immutable in backup merge
-  var KEY_PATH = { dailyLog: 'date', meals: 'id', steps: 'key', sleepSamples: 'key', settings: 'key', tombstones: 'key' };
+  var STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples', 'settings', 'tombstones'];
+  var EDITABLE = ['dailyLog', 'meals', 'settings'];     // user-edited: putEditable / removeEditable
+  var LWW = ['dailyLog', 'meals', 'settings', 'healthDays']; // last-write-wins + tombstones in merge
+  var IMPORTED = ['steps', 'sleepSamples'];              // immutable in backup merge (add-only)
+  var KEY_PATH = { dailyLog: 'date', meals: 'id', steps: 'key', healthDays: 'key', sleepSamples: 'key', settings: 'key', tombstones: 'key' };
+  // What counts as "data" for the Replace-all guard, its confirm and its result message
+  // (A-005 R1-1/R1-2): days, meals, steps and sleep records only. Settings and tombstones are
+  // never counted as data. countDataRecords() is the ONE function all three use.
+  var DATA_COUNT_STORES = ['dailyLog', 'meals', 'steps', 'healthDays', 'sleepSamples'];
 
   var RATINGS = ['anxiety', 'mood', 'energy', 'stress'];
   var TAGS = ['sensory', 'schedule-change', 'social', 'work-school', 'caregiving', 'other'];
@@ -39,6 +66,16 @@
   var STEP_ORIGINS = ['shortcut', 'export'];
   var SLEEP_STAGES = ['inBed', 'awake', 'asleepCore', 'asleepDeep', 'asleepREM', 'asleepUnspecified', 'unknown'];
   var EPOCH_ISO = '1970-01-01T00:00:00.000Z';
+  var SLEEP_KINDS = ['night', 'inBedOnly', 'napOnly'];
+  // Per-day sleep fields (R-001 §6.1 SleepDay), in this order. Must match
+  // HT.healthAgg.emptySleepFields() (checked in tests/import-tests.js). Grouped by type below.
+  var SLEEP_DAY_FIELDS = ['kind', 'asleepMin', 'inBedMin', 'awakeMin', 'coreMin', 'deepMin', 'remMin', 'unspecifiedMin',
+    'hasStages', 'sessionCount', 'sleepStart', 'sleepEnd', 'sourceUsed', 'inBedSource', 'partial', 'uncoveredMin',
+    'altSource', 'altAsleepMin', 'napMin', 'napCount', 'napSources'];
+  var SLEEP_NUM_ZERO = ['sessionCount', 'uncoveredMin', 'napMin', 'napCount'];   // number, default 0
+  var SLEEP_BOOL = ['hasStages', 'partial'];
+  var SLEEP_STR_OR_NULL = ['sourceUsed', 'inBedSource', 'altSource'];
+  // every other field except kind/napSources: number or null
 
   var SETTINGS_DEFAULTS = {
     key: 'settings',
@@ -49,12 +86,17 @@
     // A-003: a user-set range lowers but does not remove FDA device-function risk).
     // Only a strict boolean true turns it on; saving a range never turns it on.
     rangeNoticeOn: false,
+    // Apple Health source priority (R-001 §6.0.3 user override): { steps, sleep } lists of
+    // {key, cls, name}, or null = default order. Moved here from localStorage in schema v3 so
+    // backups include it (decisions.md 2026-09-23 "Schema v3").
+    sourcePriority: null,
     updatedAt: EPOCH_ISO
   };
 
   // ---------- keys ----------
   var keys = {
     steps: function (date, origin) { return date + ':' + origin; },
+    healthDay: function (date, origin) { return date + ':' + origin; },
     sleep: function (s) { return s.origin + '|' + s.stage + '|' + s.startMs + '|' + s.endMs + '|' + s.source; },
     tombstone: function (store, id) { return store + '|' + id; }
   };
@@ -102,8 +144,110 @@
         var s = r.result;
         if (s && typeof s.rangeNoticeOn !== 'boolean') { s.rangeNoticeOn = false; os.put(s); }
       };
+    },
+    // v3 (schema v3): new healthDays store. Full-export per-day sleep fields move out of the
+    // `steps` store into it, using splitExportSteps (the same function as backupMigrations[3]).
+    // No data loss: every sleep field is copied before it is removed from the step record, and
+    // a step record is deleted only when it held no step count and its sleep was moved.
+    // Idempotent: a record with no sleep fields left is not touched again, and puts are keyed.
+    // Moved records get updatedAt = EPOCH: this is a schema move, not a new import, so it
+    // never wins a merge against a real import made elsewhere (same reasoning as v2).
+    // Settings get an explicit sourcePriority:null (updatedAt unchanged, as in v2); the
+    // localStorage order is moved later, once, by HT.healthData (page only; js/health-agg.js).
+    3: function (db, tx) {
+      var hd = db.objectStoreNames.contains('healthDays') ? tx.objectStore('healthDays')
+        : db.createObjectStore('healthDays', { keyPath: 'key' });
+      if (!hd.indexNames.contains('date')) hd.createIndex('date', 'date', { unique: false });
+      var cur = tx.objectStore('steps').openCursor();
+      cur.onsuccess = function () {
+        var c = cur.result;
+        if (!c) return;
+        var sp = splitExportSteps(c.value, EPOCH_ISO);
+        if (sp.changed) {
+          if (sp.healthDay) hd.put(sp.healthDay);
+          if (sp.steps) c.update(sp.steps); else c.delete();
+        }
+        c.continue();
+      };
+      // Fill EVERY missing default field (not only sourcePriority): when upgrading from v1,
+      // migration 2's get/put and this get run in the same transaction, and this get returns
+      // the record as it was before migration 2's put, so this put must carry
+      // rangeNoticeOn:false too or it would undo migration 2 (found by the LB1 v1→v2 test).
+      var os = tx.objectStore('settings');
+      var r = os.get('settings');
+      r.onsuccess = function () {
+        var s = r.result;
+        if (!s) return;
+        var changed = false;
+        Object.keys(SETTINGS_DEFAULTS).forEach(function (k) {
+          if (k === 'updatedAt' || Object.prototype.hasOwnProperty.call(s, k)) return;
+          s[k] = SETTINGS_DEFAULTS[k]; changed = true;
+        });
+        if (typeof s.rangeNoticeOn !== 'boolean') { s.rangeNoticeOn = false; changed = true; }
+        if (changed) os.put(s);
+      };
     }
   };
+
+  // ---------- healthDays records (schema v3) ----------
+  function numOrNull(v) { return (typeof v === 'number' && isFinite(v) && v >= 0 && v <= 1e14) ? v : null; }
+
+  /**
+   * THE builder for a healthDays record (used by the importer, the DB/backup migrations and
+   * the backup sanitizer, so all three give identical records). src = any object carrying the
+   * SleepDay fields plus `date`. Returns null when src has no valid date or no sleep kind.
+   */
+  function makeHealthDay(src, origin, updatedAt) {
+    if (!src || !D.isValidDateStr(src.date) || STEP_ORIGINS.indexOf(origin) < 0) return null;
+    if (SLEEP_KINDS.indexOf(src.kind) < 0) return null;
+    var o = { key: keys.healthDay(src.date, origin), date: src.date, origin: origin };
+    SLEEP_DAY_FIELDS.forEach(function (k) {
+      var v = src[k];
+      if (k === 'kind') o.kind = v;
+      else if (k === 'napSources') o.napSources = Array.isArray(v) ? v.filter(function (x) { return typeof x === 'string'; }).map(function (x) { return x.slice(0, 500); }) : [];
+      else if (SLEEP_BOOL.indexOf(k) >= 0) o[k] = v === true;
+      else if (SLEEP_STR_OR_NULL.indexOf(k) >= 0) o[k] = typeof v === 'string' ? v.slice(0, 500) : null;
+      else if (SLEEP_NUM_ZERO.indexOf(k) >= 0) o[k] = numOrNull(v) === null ? 0 : v;
+      else o[k] = numOrNull(v);
+    });
+    o.updatedAt = isoOr(updatedAt, EPOCH_ISO);
+    return o;
+  }
+
+  /**
+   * Split a pre-v3 `steps` record: an export-origin record that still carries the per-day
+   * sleep fields gives { changed:true, steps: record without them | null, healthDay | null }.
+   * steps is null (delete) only when the record had no step count AND its sleep was moved.
+   * Anything else (Shortcut records, already-split records) → { changed:false }.
+   */
+  function splitExportSteps(rec, updatedAt) {
+    if (!rec || rec.origin !== 'export') return { changed: false };
+    var has = SLEEP_DAY_FIELDS.some(function (k) { return Object.prototype.hasOwnProperty.call(rec, k); });
+    if (!has) return { changed: false };
+    var hd = makeHealthDay(rec, 'export', updatedAt);
+    var st = JSON.parse(JSON.stringify(rec));
+    SLEEP_DAY_FIELDS.forEach(function (k) { delete st[k]; });
+    var noSteps = st.value === null || st.value === undefined;
+    return { changed: true, steps: (noSteps && hd) ? null : st, healthDay: hd };
+  }
+
+  /** Source-priority lists from settings or a backup: invalid entries dropped; empty → null. */
+  function sanitizePriority(v) {
+    if (!v || typeof v !== 'object') return null;
+    var out = { steps: null, sleep: null }, any = false;
+    ['steps', 'sleep'].forEach(function (t) {
+      if (!Array.isArray(v[t])) return;
+      var seen = {}, list = [];
+      v[t].slice(0, 500).forEach(function (x) {
+        if (!x || typeof x.key !== 'string' || !x.key || x.key.length > 1000 || seen[x.key]) return;
+        if (!(typeof x.cls === 'number' && Math.floor(x.cls) === x.cls && x.cls >= 0 && x.cls <= 3)) return;
+        seen[x.key] = true;
+        list.push({ key: x.key, cls: x.cls, name: typeof x.name === 'string' ? x.name.slice(0, 500) : '' });
+      });
+      if (list.length) { out[t] = list; any = true; }
+    });
+    return any ? out : null;
+  }
 
   var dbName = DB_NAME_DEFAULT;
   var dbPromise = null;
@@ -220,7 +364,46 @@
     });
   }
 
+  /**
+   * Commit one full-export import in ONE transaction (nothing is written if it fails, AT-12).
+   * plan = { steps: [stepRecord], healthDays: [healthDay], deleteSteps: [key], deleteHealthDays: [key] }
+   * (built by HT.healthAgg.toExportPlan). A day in the file overwrites that day's export
+   * records, as before v3: a day with no step count removes an old export step record, and a
+   * day with no sleep removes an old export healthDay (with a tombstone, so an older backup
+   * can't bring it back — A-002 §2 item 14). New healthDays clear any tombstone for their key.
+   */
+  function putExportDays(plan) {
+    return withTx(['steps', 'healthDays', 'tombstones'], 'readwrite', function (tx) {
+      var st = tx.objectStore('steps'), hd = tx.objectStore('healthDays'), tb = tx.objectStore('tombstones');
+      var now = D.nowIso();
+      (plan.deleteSteps || []).forEach(function (k) { st.delete(k); });
+      (plan.steps || []).forEach(function (r) { st.put(r); });
+      (plan.healthDays || []).forEach(function (r) { hd.put(r); tb.delete(keys.tombstone('healthDays', r.key)); });
+      (plan.deleteHealthDays || []).forEach(function (k) {
+        var g = hd.get(k);
+        g.onsuccess = function () {
+          if (!g.result) return;
+          hd.delete(k);
+          tb.put({ key: keys.tombstone('healthDays', k), store: 'healthDays', id: k, deletedAt: now });
+        };
+      });
+      return (plan.steps || []).length + (plan.healthDays || []).length;
+    });
+  }
+
   // ---------- convenience API used by screens ----------
+  /** A complete settings record: defaults, then cur, then patch; normalised fields. */
+  function buildSettings(cur, patch) {
+    var out = JSON.parse(JSON.stringify(SETTINGS_DEFAULTS));
+    if (cur) Object.keys(cur).forEach(function (k) { out[k] = cur[k]; });
+    if (patch) Object.keys(patch).forEach(function (k) { out[k] = patch[k]; });
+    out.key = 'settings';
+    // T001-13: always store the opt-in as a real boolean (strict true only), so a saved
+    // record and its backup/restore copy are identical.
+    out.rangeNoticeOn = out.rangeNoticeOn === true;
+    out.sourcePriority = sanitizePriority(out.sourcePriority);
+    return JSON.parse(JSON.stringify(out));
+  }
   function getSettings() {
     return get('settings', 'settings').then(function (s) {
       var out = JSON.parse(JSON.stringify(SETTINGS_DEFAULTS));
@@ -228,12 +411,56 @@
       return out;
     });
   }
+  /** Save a whole settings record (normalised; stamps updatedAt). */
   function saveSettings(s) {
-    s.key = 'settings';
-    // T001-13: always store the opt-in as a real boolean (strict true only), so a saved
-    // record and its backup/restore copy are identical.
-    s.rangeNoticeOn = s.rangeNoticeOn === true;
-    return putEditable('settings', s);
+    return putEditable('settings', buildSettings(s, null));
+  }
+  /**
+   * Change only some settings fields, reading the stored record in the same transaction, so
+   * two screens that each hold an older copy (the range card and the source-priority editor)
+   * can't overwrite each other's fields. Stamps updatedAt (a real user edit).
+   */
+  function patchSettings(patch) {
+    return withTx(['settings', 'tombstones'], 'readwrite', function (tx) {
+      var os = tx.objectStore('settings');
+      return new Promise(function (resolve, reject) {
+        var g = os.get('settings');
+        g.onerror = function () { reject(g.error); };
+        g.onsuccess = function () {
+          var rec = buildSettings(g.result, patch);
+          rec.updatedAt = D.nowIso();
+          os.put(rec);
+          tx.objectStore('tombstones').delete(keys.tombstone('settings', 'settings'));
+          resolve(rec);
+        };
+      });
+    });
+  }
+  /**
+   * One-time move of the source-priority order from localStorage into settings (schema v3).
+   * Writes only when settings have no order yet; returns true if written. updatedAt is kept
+   * (EPOCH when there was no settings record): moving a stored choice is not a new edit, so it
+   * must not win a merge against a real settings change made on another device (the same rule
+   * as DB migration 2, A-005 1.2).
+   */
+  function fillSourcePriorityIfEmpty(order) {
+    var clean = sanitizePriority(order);
+    if (!clean) return Promise.resolve(false);
+    return withTx(['settings'], 'readwrite', function (tx) {
+      var os = tx.objectStore('settings');
+      return new Promise(function (resolve, reject) {
+        var g = os.get('settings');
+        g.onerror = function () { reject(g.error); };
+        g.onsuccess = function () {
+          var cur = g.result;
+          if (cur && sanitizePriority(cur.sourcePriority)) { resolve(false); return; }
+          var rec = buildSettings(cur, { sourcePriority: clean });
+          rec.updatedAt = cur ? isoOr(cur.updatedAt, EPOCH_ISO) : EPOCH_ISO;
+          os.put(rec);
+          resolve(true);
+        };
+      });
+    });
   }
 
   function emptyDailyLog(date) {
@@ -278,6 +505,9 @@
       if (g && HT.units.isUnit(g.unit) && typeof g.value === 'number' && isFinite(g.value) &&
           g.value >= HT.units.INPUT_LIMITS[g.unit].min && g.value <= HT.units.INPUT_LIMITS[g.unit].max) {
         o.glucose = { value: g.value, unit: g.unit };
+        // A-005 Part 2: optional reading time. Only an integer 0–720 is kept; anything else
+        // (90.5, −1, 721, "90", null) drops the key — the meal itself is still restored.
+        if (isIntIn(g.minutesAfter, 0, MINUTES_AFTER_MAX)) o.glucose.minutesAfter = g.minutesAfter;
       } else o.glucose = null;
       o.note = str(r.note, 2000);
       o.createdAt = isoOr(r.createdAt, EPOCH_ISO);
@@ -297,8 +527,15 @@
       }
       // T001-13: strict true only ("true", 1, etc. restore as off).
       o.rangeNoticeOn = r.rangeNoticeOn === true;
+      o.sourcePriority = sanitizePriority(r.sourcePriority);
       o.updatedAt = isoOr(r.updatedAt, EPOCH_ISO);
       return o;
+    },
+    // Per-day sleep from the full export (schema v3). Whitelisted fields only; the key is
+    // recomputed from date + origin.
+    healthDays: function (r) {
+      if (!r) return null;
+      return makeHealthDay(r, r.origin, r.updatedAt);
     },
     // Imported stores: the importer modules own the extra fields; we check the key fields
     // and that the stored key matches the one derived from them.
@@ -318,7 +555,7 @@
       return o;
     },
     tombstones: function (r) {
-      if (!r || EDITABLE.indexOf(r.store) < 0 || typeof r.id !== 'string' || !r.id || !D.isIso(r.deletedAt)) return null;
+      if (!r || LWW.indexOf(r.store) < 0 || typeof r.id !== 'string' || !r.id || !D.isIso(r.deletedAt)) return null;
       return { key: keys.tombstone(r.store, r.id), store: r.store, id: r.id, deletedAt: r.deletedAt };
     }
   };
@@ -333,8 +570,63 @@
         b.stores.settings.forEach(function (r) { if (r && typeof r === 'object') r.rangeNoticeOn = false; });
       }
       return b;
+    },
+    // v2 -> v3.
+    // Meals: pass-through. v2 meals have no reading time; nothing is inferred (A-005 Part 2),
+    //   so they stay out of P12.
+    // Steps: full-export sleep fields move into healthDays with the same splitExportSteps as
+    //   DB migration 3 (updatedAt EPOCH: a schema move, not a new import).
+    // Settings: no sourcePriority in v2 → sanitize gives null (default order).
+    3: function (b) {
+      if (b.stores && Array.isArray(b.stores.steps)) {
+        var keep = [], moved = [];
+        b.stores.steps.forEach(function (r) {
+          var sp = (r && typeof r === 'object') ? splitExportSteps(r, EPOCH_ISO) : { changed: false };
+          if (!sp.changed) { keep.push(r); return; }
+          if (sp.steps) keep.push(sp.steps);
+          if (sp.healthDay) moved.push(sp.healthDay);
+        });
+        b.stores.steps = keep;
+        if (moved.length) b.stores.healthDays = (Array.isArray(b.stores.healthDays) ? b.stores.healthDays : []).concat(moved);
+      }
+      return b;
     }
   };
+
+  /**
+   * THE count for the Replace-all guard, its confirm and its result (A-005 R1-1/R1-2).
+   * stores = clean store arrays. Counts days, meals, step days, full-export sleep days and
+   * sleep samples; settings are reported separately and never make a file count as data;
+   * tombstones are not counted at all.
+   * Returns { total, byStore: { dailyLog, meals, steps, healthDays, sleepSamples }, settings }.
+   */
+  function countDataRecords(stores) {
+    var byStore = {}, total = 0;
+    DATA_COUNT_STORES.forEach(function (s) {
+      var n = stores && Array.isArray(stores[s]) ? stores[s].length : 0;
+      byStore[s] = n; total += n;
+    });
+    return { total: total, byStore: byStore, settings: stores && Array.isArray(stores.settings) ? stores.settings.length : 0 };
+  }
+
+  var COUNT_LABELS = {
+    dailyLog: ['daily log', 'daily logs'],
+    meals: ['meal', 'meals'],
+    steps: ['day of steps', 'days of steps'],
+    healthDays: ['day of sleep from the full export', 'days of sleep from the full export'],
+    sleepSamples: ['sleep record from the Shortcut', 'sleep records from the Shortcut']
+  };
+  function fmtCount(n) { try { return Number(n).toLocaleString('en-US'); } catch (e) { return String(n); } }
+  /** Text for a countDataRecords() result, e.g. "12 daily logs, 30 meals, settings". */
+  function describeRecordCounts(c) {
+    var parts = [];
+    DATA_COUNT_STORES.forEach(function (s) {
+      var n = c.byStore[s];
+      if (n) parts.push(fmtCount(n) + ' ' + COUNT_LABELS[s][n === 1 ? 0 : 1]);
+    });
+    if (c.settings) parts.push('settings');
+    return parts.length ? parts.join(', ') : 'nothing';
+  }
 
   /**
    * Validate + migrate + sanitize a parsed backup object.
@@ -375,9 +667,11 @@
         clean[s].push(c);
       });
     });
-    var records = 0;
-    STORES.forEach(function (s) { records += clean[s].length; });
-    return { ok: true, skipped: skipped, records: records, backup: { app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: b.exportedAt, stores: clean } };
+    // A-005 R1-1: "records" is the DATA count only (days, meals, steps, sleep); a file holding
+    // only tombstones or only settings has records = 0 and is refused by Replace all.
+    var counts = countDataRecords(clean);
+    return { ok: true, skipped: skipped, records: counts.total, dataRecords: counts.total, counts: counts,
+      backup: { app: APP_ID, schemaVersion: SCHEMA_VERSION, exportedAt: b.exportedAt, stores: clean } };
   }
 
   function recTime(r, store) {
@@ -388,9 +682,9 @@
 
   /**
    * PURE merge planner (no IndexedDB) — unit-tested in tests/tests.js.
-   * existing / incoming: { dailyLog:[], meals:[], steps:[], sleepSamples:[], settings:[], tombstones:[] }
+   * existing / incoming: { dailyLog:[], meals:[], steps:[], healthDays:[], sleepSamples:[], settings:[], tombstones:[] }
    * Rules (A-002 §2 item 14):
-   *  - editable stores: per key, the candidate with the newest time wins, where a record's
+   *  - last-write-wins stores (dailyLog, meals, settings, healthDays): per key, the candidate with the newest time wins, where a record's
    *    time is updatedAt and a tombstone's time is deletedAt. Ties keep what already exists.
    *    If a tombstone wins, the record is deleted and the tombstone kept; if a record wins,
    *    any tombstone for that key is removed.
@@ -406,7 +700,7 @@
     var exTomb = index(existing.tombstones, 'key');
     var inTomb = index(incoming.tombstones, 'key');
 
-    EDITABLE.forEach(function (s) {
+    LWW.forEach(function (s) {
       var kp = KEY_PATH[s];
       var exRec = index(existing[s], kp), inRec = index(incoming[s], kp);
       var allKeys = {};
@@ -496,8 +790,9 @@
     if (!prep.ok) return Promise.resolve(prep);
     var inc = prep.backup.stores;
     if (mode === 'replace') {
-      // T001-01: never wipe the device for a file with nothing readable in it.
-      if (!prep.records) {
+      // T001-01 / A-005 R1-1: never wipe the device for a file with no DATA in it (a file with
+      // only tombstones or only settings counts as empty). Same count as the confirm (R1-2).
+      if (!prep.counts.total) {
         return Promise.resolve({ ok: false, error: 'This backup has no readable entries, so nothing was changed.', skipped: prep.skipped });
       }
       return withTx(STORES, 'readwrite', function (tx) {
@@ -507,8 +802,9 @@
           inc[s].forEach(function (r) { os.put(r); });
         });
       }).then(function () {
-        var n = 0; DATA_STORES.forEach(function (s) { n += inc[s].length; });
-        return { ok: true, mode: 'replace', counts: { added: n, updated: 0, deleted: 0, unchanged: 0 }, skipped: prep.skipped };
+        var n = prep.counts.total;
+        return { ok: true, mode: 'replace', counts: { added: n, updated: 0, deleted: 0, unchanged: 0 },
+          restored: prep.counts, skipped: prep.skipped };
       });
     }
     return snapshot().then(function (ex) {
@@ -523,9 +819,14 @@
     DB_VERSION: DB_VERSION,
     SCHEMA_VERSION: SCHEMA_VERSION,
     APP_ID: APP_ID,
+    MINUTES_AFTER_MAX: MINUTES_AFTER_MAX,
     STORES: STORES,
     EDITABLE: EDITABLE,
+    LWW: LWW,
     IMPORTED: IMPORTED,
+    DATA_COUNT_STORES: DATA_COUNT_STORES,
+    SLEEP_DAY_FIELDS: SLEEP_DAY_FIELDS,
+    SLEEP_KINDS: SLEEP_KINDS,
     KEY_PATH: KEY_PATH,
     RATINGS: RATINGS,
     TAGS: TAGS,
@@ -546,9 +847,17 @@
     putEditable: putEditable,
     removeEditable: removeEditable,
     putImported: putImported,
+    putExportDays: putExportDays,
     withTx: withTx,
     getSettings: getSettings,
     saveSettings: saveSettings,
+    patchSettings: patchSettings,
+    fillSourcePriorityIfEmpty: fillSourcePriorityIfEmpty,
+    makeHealthDay: makeHealthDay,
+    splitExportSteps: splitExportSteps,
+    sanitizePriority: sanitizePriority,
+    countDataRecords: countDataRecords,
+    describeRecordCounts: describeRecordCounts,
     emptyDailyLog: emptyDailyLog,
     getDailyLog: getDailyLog,
     saveDailyLog: saveDailyLog,

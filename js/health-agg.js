@@ -498,14 +498,34 @@
     };
   }
 
-  /** Stored IndexedDB record for a full-export day (store `steps`, origin 'export'). */
+  /**
+   * Stored `steps` record for a full-export day (origin 'export'). Schema v3: steps only —
+   * the per-day sleep fields go to the `healthDays` store (toExportPlan).
+   */
   function toExportRecord(day) {
-    var r = JSON.parse(JSON.stringify(day));
-    r.key = r.date + ':export';
-    r.origin = 'export';
-    r.value = day.steps;          // `value` is the steps field checked by HT.db sanitize
-    delete r.steps;
-    return r;
+    return { key: day.date + ':export', date: day.date, origin: 'export',
+      value: day.steps,           // `value` is the steps field checked by HT.db sanitize
+      stepsSource: day.stepsSource === undefined ? null : day.stepsSource, stepsMixed: !!day.stepsMixed };
+  }
+
+  /**
+   * Everything one full-export import writes (page only; needs HT.db), for HT.db.putExportDays.
+   * Each day in the file overwrites that day's export records, as before v3:
+   *   steps !== null → put steps record;   steps === null → delete any old export step record
+   *   sleep kind set → put healthDays record (updatedAt = import time, so a later import wins
+   *                    a backup merge);    no sleep → delete any old export healthDay
+   * Days missing from the file are never touched (documented limit, decisions.md schema v3).
+   */
+  function toExportPlan(days, updatedAt) {
+    var plan = { steps: [], healthDays: [], deleteSteps: [], deleteHealthDays: [] };
+    days.forEach(function (day) {
+      if (day.steps !== null && day.steps !== undefined) plan.steps.push(toExportRecord(day));
+      else plan.deleteSteps.push(day.date + ':export');
+      var hd = HT.db.makeHealthDay(day, 'export', updatedAt);
+      if (hd) plan.healthDays.push(hd);
+      else plan.deleteHealthDays.push(HT.db.keys.healthDay(day.date, 'export'));
+    });
+    return plan;
   }
 
   // ---------- Shortcut sleep samples -> nights (same §6.1 rules) ----------
@@ -561,6 +581,7 @@
     mergeDays: mergeDays,
     resolveAll: resolveAll,
     toExportRecord: toExportRecord,
+    toExportPlan: toExportPlan,
     emptySleepFields: emptySleepFields,
     resolveShortcutSleep: resolveShortcutSleep
   };
@@ -575,59 +596,136 @@
     return o;
   }
 
+  /** An export "night" = an export MAIN sleep (decisions.md 2026-09-24 refinement). */
+  function isMainSleep(r) { return !!r && r.kind === 'night' && r.asleepMin !== null && r.asleepMin !== undefined; }
+
+  /**
+   * Choose the sleep shown for one wake-date. exp = export healthDay | null, sc = Shortcut
+   * SleepDay row | null. Returns { sleep, origin, extrasFrom }.
+   * decisions.md 2026-09-23 "SLEEP precedence" + 2026-09-24 refinement:
+   *  1. export main night → export (it knows manual entries and device keys; the CSV doesn't).
+   *  2. else a Shortcut main night → the Shortcut night; if the export has only a nap or only
+   *     in-bed time for that date, the export's nap fields (napMin/napCount/napSources) and,
+   *     for an in-bed-only export day, its in-bed fields (inBedMin/inBedSource) are kept on
+   *     top (extrasFrom 'export').
+   *  3. else export nap-only / in-bed-only → export; else the Shortcut row (nap/in-bed only).
+   */
+  function chooseSleep(exp, sc) {
+    if (isMainSleep(exp)) return { sleep: pickSleep(exp), origin: 'export', extrasFrom: null };
+    if (isMainSleep(sc)) {
+      var s = pickSleep(sc), extras = null;
+      if (exp && exp.kind) {
+        if (exp.napCount > 0) { s.napMin = exp.napMin; s.napCount = exp.napCount; s.napSources = (exp.napSources || []).slice(); extras = 'export'; }
+        if (exp.kind === 'inBedOnly' && exp.inBedMin !== null && exp.inBedMin !== undefined) {
+          s.inBedMin = exp.inBedMin; s.inBedSource = exp.inBedSource; extras = 'export';
+        }
+      }
+      return { sleep: s, origin: 'shortcut', extrasFrom: extras };
+    }
+    if (exp && exp.kind) return { sleep: pickSleep(exp), origin: 'export', extrasFrom: null };
+    if (sc && sc.kind) return { sleep: pickSleep(sc), origin: 'shortcut', extrasFrom: null };
+    return { sleep: null, origin: null, extrasFrom: null };
+  }
+
   /**
    * HT.healthData.getDays({ from, to }) -> Promise<[DayHealth]> sorted by date, where
    * DayHealth = { date, steps, stepsOrigin, stepsSource, stepsMixed, stepsSuspect,
-   *               sleep: SleepDay-fields | null, sleepOrigin }.
+   *               sleep: SleepDay-fields | null, sleepOrigin, sleepExtrasFrom }.
+   * Reads: `steps` (steps only), `healthDays` (full-export sleep, schema v3) and the Shortcut
+   * `sleepSamples`; the source order comes from settings.sourcePriority.
    * Steps: the Shortcut value is shown over the full-export value (decisions.md
    * 2026-09-23); a Shortcut day with empty steps (null) falls back to the export.
-   * Sleep: the opposite — the full-export night is shown for a wake-date both cover, and a
-   * night built from Shortcut samples only fills dates the export has no night for
-   * (decisions.md 2026-09-23 "SLEEP precedence"): the export knows manual entries and
-   * device keys, the CSV doesn't, so its night is the less accurate reconstruction.
-   * Both stay stored with their origin. Days with no data are absent.
+   * Sleep: chooseSleep() above (export main night first). Both origins stay stored.
+   * Days with no data are absent.
    */
   function getDays(opts) {
     opts = opts || {};
     if (!HT.db) return Promise.resolve([]);
     var zone = opts.zone || HD.localZone;
-    var saved = (HT.importHealth && HT.importHealth.getSavedOrder) ? HT.importHealth.getSavedOrder() : null;
     return Promise.all([
       HT.db.getAll('steps'),
-      HT.db.getAllByIndex('sleepSamples', 'origin', 'shortcut')
+      HT.db.getAll('healthDays'),
+      HT.db.getAllByIndex('sleepSamples', 'origin', 'shortcut'),
+      getSavedOrder().catch(function () { return null; })
     ]).then(function (res) {
-      var steps = res[0], samples = res[1];
+      var steps = res[0], health = res[1], samples = res[2], saved = res[3];
       var nights = resolveShortcutSleep(samples, saved && saved.sleep, zone);
       var by = Object.create(null);
       function get(date) {
         return by[date] || (by[date] = { date: date, steps: null, stepsOrigin: null, stepsSource: null,
-          stepsMixed: false, stepsSuspect: false, sleep: null, sleepOrigin: null, _exp: null });
+          stepsMixed: false, stepsSuspect: false, sleep: null, sleepOrigin: null, sleepExtrasFrom: null, _exp: null, _sc: null });
       }
       steps.forEach(function (r) {
         var d = get(r.date);
         if (r.origin === 'export') {
-          d._exp = r;
           if (d.stepsOrigin !== 'shortcut' && r.value !== null && r.value !== undefined) {
             d.steps = r.value; d.stepsOrigin = 'export'; d.stepsSource = r.stepsSource || null; d.stepsMixed = !!r.stepsMixed;
           }
-          if (!d.sleep && r.kind) { d.sleep = pickSleep(r); d.sleepOrigin = 'export'; }
         } else if (r.origin === 'shortcut' && r.value !== null && r.value !== undefined) {
           d.steps = r.value; d.stepsOrigin = 'shortcut'; d.stepsSource = 'Shortcut';
           d.stepsMixed = false; d.stepsSuspect = !!r.suspect;
         }
       });
-      nights.forEach(function (n) {
-        var d = get(n.date);
-        if (d.sleepOrigin === 'export') return;   // export night wins (decisions.md, T002-01)
-        d.sleep = pickSleep(n);
-        d.sleepOrigin = 'shortcut';
+      health.forEach(function (r) { if (r.origin === 'export' && r.kind) get(r.date)._exp = r; });
+      nights.forEach(function (n) { get(n.date)._sc = n; });
+      Object.keys(by).forEach(function (k) {
+        var d = by[k], c = chooseSleep(d._exp, d._sc);
+        d.sleep = c.sleep; d.sleepOrigin = c.origin; d.sleepExtrasFrom = c.extrasFrom;
       });
       return Object.keys(by).sort().filter(function (k) {
         return (!opts.from || k >= opts.from) && (!opts.to || k <= opts.to);
-      }).map(function (k) { var d = by[k]; delete d._exp; return d; })
+      }).map(function (k) { var d = by[k]; delete d._exp; delete d._sc; return d; })
         .filter(function (d) { return d.steps !== null || d.sleep !== null; });
     });
   }
 
-  if (typeof window !== 'undefined') HT.healthData = { getDays: getDays };
+  // ---------- source priority persistence (settings.sourcePriority, schema v3) ----------
+  var LEGACY_PREF_KEY = 'ht.healthImport.v1';   // B-002 localStorage prefs (savedOrder lived here)
+  var legacyMove = null;
+
+  /**
+   * One-time move of B-002's localStorage savedOrder into settings (decisions.md schema v3):
+   * copy it when settings have no order yet (HT.db.fillSourcePriorityIfEmpty keeps updatedAt),
+   * then remove savedOrder from localStorage. Safe to call many times; a failure is retried
+   * on the next call.
+   */
+  function migrateLegacyOrder() {
+    if (legacyMove) return legacyMove;
+    legacyMove = new Promise(function (resolve) {
+      var raw = null, p = null;
+      try { raw = window.localStorage.getItem(LEGACY_PREF_KEY); } catch (e) { resolve(); return; }
+      try { p = JSON.parse(raw || 'null'); } catch (e) { p = null; }
+      if (!p || typeof p !== 'object' || !Object.prototype.hasOwnProperty.call(p, 'savedOrder')) { resolve(); return; }
+      resolve(HT.db.fillSourcePriorityIfEmpty(p.savedOrder).then(function () {
+        delete p.savedOrder;
+        try { window.localStorage.setItem(LEGACY_PREF_KEY, JSON.stringify(p)); } catch (e) { /* retried next session */ }
+      }));
+    }).catch(function () { legacyMove = null; });
+    return legacyMove;
+  }
+
+  /** The user's saved priority lists { steps: [{key, cls, name}] | null, sleep } (never null). */
+  function getSavedOrder() {
+    if (!HT.db) return Promise.resolve({ steps: null, sleep: null });
+    return migrateLegacyOrder().then(function () { return HT.db.getSettings(); }).then(function (s) {
+      var sp = s && s.sourcePriority;
+      return { steps: (sp && sp.steps) || null, sleep: (sp && sp.sleep) || null };
+    });
+  }
+
+  /** Save (order) or reset (null) the priority lists; a real user edit (stamps updatedAt). */
+  function saveSavedOrder(order) {
+    return migrateLegacyOrder().then(function () {
+      return HT.db.patchSettings({ sourcePriority: order || null });
+    }).then(function (rec) {
+      if (HT.state && HT.state.settings) HT.state.settings = JSON.parse(JSON.stringify(rec));
+      return rec;
+    });
+  }
+
+  if (typeof window !== 'undefined') {
+    HT.healthData = { getDays: getDays, chooseSleep: chooseSleep, getSavedOrder: getSavedOrder,
+      saveSavedOrder: saveSavedOrder, migrateLegacyOrder: migrateLegacyOrder, LEGACY_PREF_KEY: LEGACY_PREF_KEY,
+      _resetLegacyMove: function () { legacyMove = null; } };   // tests only
+  }
 })(self.HT = self.HT || {});

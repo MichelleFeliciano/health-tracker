@@ -88,6 +88,30 @@
     });
   }
 
+  /** A-005 R1-3: range order check on the exact mg/dL values to be stored (null = no bound). */
+  function rangeOrderOk(lowMgdl, highMgdl) {
+    return lowMgdl === null || highMgdl === null || lowMgdl < highMgdl;
+  }
+
+  /**
+   * Replace-all confirm text (A-005 R1-1/R1-2). prep = HT.db.prepareBackup() result; the
+   * per-type breakdown comes from prep.counts (HT.db.countDataRecords), the same count the
+   * guard and the result message use.
+   */
+  function replaceConfirmText(prep) {
+    var q = 'Replace all: this erases every entry on this device and loads only the backup file (' +
+      HT.db.describeRecordCounts(prep.counts) + ').';
+    if (prep.skipped) {
+      q += '\n\n' + prep.skipped + (prep.skipped === 1 ? ' record in the file is' : ' records in the file are') +
+        ' unreadable or duplicated and will NOT be restored.';
+    }
+    return q + '\n\nContinue?';
+  }
+  /** Replace-all result text, from the same count as the confirm (R1-2). */
+  function replaceResultText(r) {
+    return 'Restored ' + HT.db.describeRecordCounts(r.restored) + '.';
+  }
+
   function readFileText(file) {
     if (file && typeof file.text === 'function') return file.text();
     return new Promise(function (resolve, reject) {
@@ -103,10 +127,14 @@
     var alive = true;
     var s = JSON.parse(JSON.stringify(HT.state.settings || HT.db.SETTINGS_DEFAULTS));
 
+    // Saves only the fields this screen owns (glucose unit, range, opt-in), read-modify-write in
+    // one transaction, so it never overwrites settings.sourcePriority saved by the Apple Health
+    // import section with an older copy (schema v3).
     function save(msg) {
       A.status('Saving…');
-      return HT.db.saveSettings(s).then(function (saved) {
-        s.updatedAt = saved.updatedAt;
+      return HT.db.patchSettings({ glucoseUnit: s.glucoseUnit, rangeLowMgdl: s.rangeLowMgdl,
+        rangeHighMgdl: s.rangeHighMgdl, rangeNoticeOn: s.rangeNoticeOn === true }).then(function (saved) {
+        s = JSON.parse(JSON.stringify(saved));
         HT.state.settings = JSON.parse(JSON.stringify(saved));
         A.status(msg || 'Saved', 'ok');
       }, function (e) { A.saveError(e); throw e; });
@@ -181,11 +209,15 @@
           var lo = U.parseGlucose(lowIn.value, unit), hi = U.parseGlucose(hiIn.value, unit);
           if (!lo.ok) { err.textContent = 'Lowest: ' + lo.error; lowIn.focus(); return; }
           if (!hi.ok) { err.textContent = 'Highest: ' + hi.error; hiIn.focus(); return; }
-          if (lo.value !== null && hi.value !== null && lo.value >= hi.value) { err.textContent = 'The lowest number must be smaller than the highest.'; lowIn.focus(); return; }
           // T001-06: an unchanged field keeps the exact stored bound (no re-rounding drift
           // after a unit switch); only an edited field is re-parsed.
-          s.rangeLowMgdl = lowIn.value.trim() === origLow ? s.rangeLowMgdl : (lo.value === null ? null : U.toMgdlExact(lo.value, unit));
-          s.rangeHighMgdl = hiIn.value.trim() === origHigh ? s.rangeHighMgdl : (hi.value === null ? null : U.toMgdlExact(hi.value, unit));
+          var effLow = lowIn.value.trim() === origLow ? s.rangeLowMgdl : (lo.value === null ? null : U.toMgdlExact(lo.value, unit));
+          var effHigh = hiIn.value.trim() === origHigh ? s.rangeHighMgdl : (hi.value === null ? null : U.toMgdlExact(hi.value, unit));
+          // A-005 R1-3: validate the EXACT values that will be stored, not the rounded display
+          // text — 70–71 mg/dL shows as 3.9–3.9 mmol/L but is still a valid range.
+          if (!rangeOrderOk(effLow, effHigh)) { err.textContent = 'The lowest number must be smaller than the highest.'; lowIn.focus(); return; }
+          s.rangeLowMgdl = effLow;
+          s.rangeHighMgdl = effHigh;
           // Saving a range never turns the note on (T001-13); rangeNoticeOn is left as it is.
           save('Range saved').then(drawRange, function () {});
         } }),
@@ -246,14 +278,10 @@
           // and refuse outright when nothing in it is readable (db.importBackup refuses too).
           var prep = HT.db.prepareBackup(obj);
           if (!prep.ok) return prep;
-          if (!prep.records) return { ok: false, error: 'This backup has no readable entries, so nothing was changed.' };
-          var q = 'Replace all: this erases every entry on this device and loads only the backup file (' +
-            prep.records + (prep.records === 1 ? ' readable record' : ' readable records') + ').';
-          if (prep.skipped) {
-            q += '\n\n' + prep.skipped + (prep.skipped === 1 ? ' record in the file is' : ' records in the file are') +
-              ' unreadable or duplicated and will NOT be restored.';
-          }
-          if (!window.confirm(q + '\n\nContinue?')) return { ok: false, cancelled: true };
+          // A-005 R1-1: only days, meals, steps and sleep count; a file with only settings or
+          // only deletions (tombstones) would erase everything, so it is refused.
+          if (!prep.counts.total) return { ok: false, error: 'This backup has no readable entries, so nothing was changed.' };
+          if (!window.confirm(replaceConfirmText(prep))) return { ok: false, cancelled: true };
         }
         return HT.db.importBackup(obj, mode);
       }).then(function (r) {
@@ -261,7 +289,7 @@
         if (!r.ok) { result.appendChild(el('p', { class: 'field-error', text: r.error })); return; }
         var c = r.counts;
         var msg = r.mode === 'replace'
-          ? 'Restored ' + c.added + ' records.'
+          ? replaceResultText(r)
           : 'Merged: ' + c.added + ' added, ' + c.updated + ' updated, ' + c.deleted + ' deleted, ' + c.unchanged + ' unchanged.';
         if (r.skipped) msg += ' ' + r.skipped + ' unreadable or duplicate records were skipped.';
         result.appendChild(el('p', { class: 'field-hint', style: 'color:var(--ok);font-weight:600', text: msg }));
@@ -327,6 +355,9 @@
     exportBackup: exportBackup,
     backupNudgeEl: backupNudgeEl,
     daysSinceBackup: daysSinceBackup,
-    backupStatusText: backupStatusText
+    backupStatusText: backupStatusText,
+    rangeOrderOk: rangeOrderOk,            // exposed for tests (A-005 R1-3)
+    replaceConfirmText: replaceConfirmText, // exposed for tests (A-005 R1-1/R1-2)
+    replaceResultText: replaceResultText
   };
 })(window.HT = window.HT || {});

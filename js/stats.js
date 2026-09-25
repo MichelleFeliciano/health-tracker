@@ -312,25 +312,26 @@
   var CARB_CODE = { low: 1, med: 2, high: 3 };
   var LINK_MIN = 60, LINK_MAX = 120;   // minutes after meal start (ADA post-meal timing, G3)
 
-  function hhmmToMin(s) {
-    var m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(s || '');
-    return m ? +m[1] * 60 + +m[2] : NaN;
+  var MINUTES_AFTER_MAX = 720;        // typo guard only (A-005 Part 2); never shown as guidance
+
+  /** A usable reading time: integer minutes 0–720 after the meal start (A-005 Part 2). */
+  function validMinutesAfter(v) {
+    return typeof v === 'number' && isFinite(v) && Math.floor(v) === v && v >= 0 && v <= MINUTES_AFTER_MAX;
   }
   /**
-   * The linked glucose reading of a meal, if it was taken 60–120 min after the meal start.
-   * The reading time is read from glucose.time ("HH:MM") or glucose.minutesAfter (number).
-   * A reading with no known time is NOT used ("No other readings are used", A-003 §5.5).
+   * The linked glucose reading of a meal, if it was taken 60–120 min (inclusive) after the
+   * meal start — A-003 §5.5 / R-003 G3 "1–2 h after the start of the meal"; this is a timing
+   * rule, not a glucose threshold. The ONLY supported time field is glucose.minutesAfter
+   * (integer 0–720, reported by the user; A-005 Part 2). The old glucose.time ("HH:MM")
+   * branch was removed: its midnight wrap read a before-meal reading as next-day.
+   * A reading with no valid time is NOT used ("No other readings are used", A-003 §5.5).
    * Returns exact mg/dL (for ranking; display converts with HT.units) or null.
    */
   function linkedGlucoseMgdl(meal, mgdlPerMmol) {
     var g = meal && meal.glucose;
     if (!g || !isNum(g.value)) return null;
-    var after = NaN;
-    if (isNum(g.minutesAfter)) after = g.minutesAfter;
-    else if (typeof g.time === 'string') {
-      var mt = hhmmToMin(meal.time), gt = hhmmToMin(g.time);
-      if (isNum(mt) && isNum(gt)) { after = gt - mt; if (after < 0) after += 1440; }
-    }
+    if (!validMinutesAfter(g.minutesAfter)) return null;
+    var after = g.minutesAfter;
     if (!(after >= LINK_MIN && after <= LINK_MAX)) return null;
     if (g.unit === 'mg/dL') return g.value;
     if (g.unit === 'mmol/L') return g.value * mgdlPerMmol;
@@ -342,17 +343,20 @@
    * No detrending and no n_eff (n_eff = n).
    */
   function analyzeMeals(meals, mgdlPerMmol) {
-    var rows = [];
+    var rows = [], noTime = 0;
     (meals || []).forEach(function (m) {
       var c = CARB_CODE[m.carb];
       if (!c) return;
+      // A-005: count meals that have a carb level and a glucose value but no valid reading
+      // time, so the P12 card can say how many readings were not used. Gates are unchanged.
+      if (m.glucose && isNum(m.glucose.value) && !validMinutesAfter(m.glucose.minutesAfter)) noTime++;
       var g = linkedGlucoseMgdl(m, mgdlPerMmol || 18.0156);
       if (g === null) return;
       rows.push({ date: m.date, carb: c, g: g });
     });
     rows.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
     var n = rows.length;
-    var res = { state: 'A', n: n, firstDate: n ? rows[0].date : null, lastDate: n ? rows[n - 1].date : null };
+    var res = { state: 'A', n: n, noTime: noTime, firstDate: n ? rows[0].date : null, lastDate: n ? rows[n - 1].date : null };
     if (n < MIN_DAYS_DESCRIPTIVE) return res;
     var cx = rows.map(function (r) { return r.carb; }), gy = rows.map(function (r) { return r.g; });
     if (allEqual(cx) || allEqual(gy)) { res.state = 'V'; res.constant = allEqual(cx) ? 'x' : 'y'; return res; }
@@ -392,6 +396,8 @@
     BH_Q: BH_Q,
     LINK_MIN: LINK_MIN,
     LINK_MAX: LINK_MAX,
+    MINUTES_AFTER_MAX: MINUTES_AFTER_MAX,
+    validMinutesAfter: validMinutesAfter,
     dayNum: dayNum,
     fromDayNum: fromDayNum,
     addDays: addDays,

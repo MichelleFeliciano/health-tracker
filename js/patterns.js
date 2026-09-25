@@ -189,6 +189,18 @@
     return 'Rank correlation ' + fmt2(r.rho) + ' (95% range ' + fmt2(r.lo) + ' to ' + fmt2(r.hi) + '), ' + r.n + (pair.meal ? ' meals.' : ' days.');
   }
 
+  /**
+   * P12 card note (A-005 Part 2). The 60–120 minute window is a timing rule from A-003 §5.5
+   * (R-003 G3), not a glucose threshold, so it may be shown (Architect, decisions.md
+   * 2026-09-23). r.noTime = meals with a carb level and a glucose value but no reading time.
+   */
+  function mealNote(r) {
+    var t = 'Uses only readings marked as taken 60 to 120 minutes after you started eating.';
+    var k = r && typeof r.noTime === 'number' ? r.noTime : 0;
+    if (k > 0) t += ' ' + k + ' meal reading' + (k === 1 ? '' : 's') + ' without a time ' + (k === 1 ? 'was' : 'were') + ' not used.';
+    return t;
+  }
+
   // ---------------- run every pair, then BH across the tested ones ----------------
   /**
    * days: HT.trends.data.buildDays output covering the window. opts: { unit }.
@@ -267,7 +279,7 @@
             el('h3', { text: title(x.pair) }),
             el('p', { text: x.sentence })
           ]);
-          if (x.pair.meal) li.appendChild(el('p', { class: 'small muted', text: 'Uses only glucose readings with a time 60–120 minutes after the start of the meal.' }));
+          if (x.pair.meal) li.appendChild(el('p', { class: 'small muted', text: mealNote(x.result) }));
           if (x.detail) li.appendChild(el('details', null, [el('summary', { text: 'More detail' }), el('p', { class: 'small', text: x.detail })]));
           list.appendChild(li);
         });
@@ -289,6 +301,7 @@
     buildSeries: buildSeries,
     sentence: sentence,
     detail: detail,
+    mealNote: mealNote,
     loggedDayCount: loggedDayCount,
     PAIRS: PAIRS,
     MEAL_PAIR: MEAL_PAIR,

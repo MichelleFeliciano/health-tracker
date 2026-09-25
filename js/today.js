@@ -29,6 +29,21 @@
 
   var NOTE_DEBOUNCE_MS = 700;
   var LOG_DEBOUNCE_MS = 200;
+  var MINUTES_AFTER_MAX = 720;   // typo guard only (A-005 Part 2; same as HT.db.MINUTES_AFTER_MAX)
+
+  /**
+   * "About how many minutes after you started eating?" (A-005 Part 2).
+   * Blank → { ok, value: null }. Only whole ASCII minutes 0–720 are accepted: "1.5", "-5",
+   * "1:30", "90m" and non-ASCII digits are refused (no guessing).
+   */
+  function parseMinutesAfter(text) {
+    var t = String(text == null ? '' : text).trim();
+    if (t === '') return { ok: true, value: null };
+    if (!/^[0-9]{1,4}$/.test(t)) return { ok: false, error: 'Enter whole minutes, like 90.' };
+    var n = parseInt(t, 10);
+    if (n > MINUTES_AFTER_MAX) return { ok: false, error: 'That’s more than 12 hours after the meal. Check the number.' };
+    return { ok: true, value: n };
+  }
 
   function render(container, params) {
     var A = HT.app, D = HT.dates, U = HT.units, el = A.el;
@@ -202,7 +217,12 @@
       var s = settingsNow();
       var parts = [];
       parts.push('Carbs: ' + (m.carb ? CARB_LABELS[m.carb] : 'not set'));
-      if (m.glucose) parts.push('Glucose ' + U.format(m.glucose.value, m.glucose.unit, s.glucoseUnit));
+      if (m.glucose) {
+        var gtxt = 'Glucose ' + U.format(m.glucose.value, m.glucose.unit, s.glucoseUnit);
+        // A-005: neutral wording only, no colour or judgement about the timing.
+        if (typeof m.glucose.minutesAfter === 'number') gtxt += ' · about ' + m.glucose.minutesAfter + ' min after starting';
+        parts.push(gtxt);
+      }
       return parts.join(' · ');
     }
 
@@ -278,6 +298,10 @@
       }
       var gIn = el('input', { type: 'text', inputmode: 'decimal', id: fid + '-g', autocomplete: 'off', 'aria-describedby': fid + '-gh ' + fid + '-ge' });
       gIn.value = origGlucoseText;
+      // A-005 Part 2: optional reading time, in minutes after the meal started. Text input
+      // (like the glucose field) to avoid iOS number-input quirks. No 60–120 guidance here.
+      var gmIn = el('input', { type: 'text', inputmode: 'numeric', id: fid + '-gm', autocomplete: 'off', 'aria-describedby': fid + '-gmh ' + fid + '-ge' });
+      gmIn.value = (existing && existing.glucose && typeof existing.glucose.minutesAfter === 'number') ? String(existing.glucose.minutesAfter) : '';
       var noteIn = el('input', { type: 'text', id: fid + '-note', maxlength: '2000', autocomplete: 'off' });
       noteIn.value = existing ? (existing.note || '') : '';
       var err = el('div', { class: 'field-error', id: fid + '-ge', role: 'alert' });
@@ -297,6 +321,9 @@
         el('label', { for: gIn.id, text: 'Glucose reading (optional), in ' + unit }),
         el('p', { class: 'field-hint', id: fid + '-gh', text: 'From your meter, if you took one. Leave blank if not.' }),
         gIn, err,
+        el('label', { for: gmIn.id, text: 'About how many minutes after you started eating? (optional)' }),
+        el('p', { class: 'field-hint', id: fid + '-gmh', text: 'Roughly is fine, for example 90 for an hour and a half. Leave blank if you’re not sure. Patterns use only readings that have this filled in.' }),
+        gmIn,
         el('label', { for: noteIn.id, text: 'What you ate (optional)' }), noteIn,
         el('div', { class: 'row', style: 'margin-top:12px' }, [
           submitBtn,
@@ -312,12 +339,21 @@
         if (!D.isValidTime(t)) { err.textContent = 'Enter a time for the meal.'; timeIn.focus(); return; }
         var glucose = null;
         if (existing && existing.glucose && gIn.value.trim() === origGlucoseText) {
-          glucose = existing.glucose; // unchanged: keep the stored value/unit, no round-trip drift
+          // Unchanged: keep the stored value/unit (no round-trip drift, T001-06). Always a NEW
+          // object, so the minutes below never leak from the old record (A-005 Part 2 #5).
+          glucose = { value: existing.glucose.value, unit: existing.glucose.unit };
         } else {
           var p = U.parseGlucose(gIn.value, unit);
           if (!p.ok) { err.textContent = p.error; gIn.focus(); return; }
           glucose = p.value === null ? null : { value: p.value, unit: unit };
         }
+        var pm = parseMinutesAfter(gmIn.value);
+        if (!pm.ok) { err.textContent = pm.error; gmIn.focus(); return; }
+        if (pm.value !== null && glucose === null) {
+          err.textContent = 'Add the glucose reading, or leave the minutes blank.'; gmIn.focus(); return;
+        }
+        // Blank minutes → the key is absent (unknown), never null.
+        if (glucose && pm.value !== null) glucose.minutesAfter = pm.value;
         var carb = null;
         carbInputs.forEach(function (r) { if (r.checked) carb = r.value; });
         var rec = existing ? JSON.parse(JSON.stringify(existing)) : { id: mealId, date: date };
@@ -384,5 +420,6 @@
     };
   }
 
-  HT.today = { render: render, METRICS: METRICS, TAG_LABELS: TAG_LABELS, CARB_LABELS: CARB_LABELS };
+  HT.today = { render: render, METRICS: METRICS, TAG_LABELS: TAG_LABELS, CARB_LABELS: CARB_LABELS,
+    parseMinutesAfter: parseMinutesAfter, MINUTES_AFTER_MAX: MINUTES_AFTER_MAX };
 })(window.HT = window.HT || {});

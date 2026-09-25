@@ -9,10 +9,14 @@
  *   main thread under file:// (Workers from file:// are blocked in most browsers). Nothing is
  *   written until the whole file has been read and resolved; then all per-day records are
  *   written in ONE IndexedDB transaction (a failure or cancel commits nothing, AT-12).
- * - Small preferences (saved source order, known sources, last-import summaries) live in
- *   localStorage under "ht.healthImport.v1". Health records live in IndexedDB only.
+ * - The user's source-priority order lives in settings.sourcePriority (IndexedDB, backed up;
+ *   schema v3). It is read/written through HT.healthData.getSavedOrder / saveSavedOrder, which
+ *   also move a pre-v3 localStorage order once. Small UI caches (known sources, last-import
+ *   summaries) stay in localStorage under "ht.healthImport.v1". Health records: IndexedDB only.
+ * - Full-export days are written with HT.db.putExportDays: step counts to `steps`, per-day
+ *   sleep to `healthDays` (schema v3).
  * - Never logs anything. Text-only DOM (no innerHTML).
- * Exposes window.HT.importHealth = { render(container), getSavedOrder() }.
+ * Exposes window.HT.importHealth = { render(container), getSavedOrder() -> Promise }.
  */
 (function (HT) {
   'use strict';
@@ -26,17 +30,19 @@
     var p = null;
     try { p = JSON.parse(window.localStorage.getItem(PREF_KEY) || 'null'); } catch (e) { p = null; }
     if (!p || typeof p !== 'object' || p.version !== PREF_VERSION) {
-      p = { version: PREF_VERSION, sources: [], savedOrder: { steps: null, sleep: null }, lastExport: null, lastCsv: null };
+      p = { version: PREF_VERSION, sources: [], lastExport: null, lastCsv: null };
     }
-    if (!p.savedOrder) p.savedOrder = { steps: null, sleep: null };
     if (!Array.isArray(p.sources)) p.sources = [];
     return p;
   }
   function savePrefs(p) {
+    // Every caller runs after HT.healthData.migrateLegacyOrder(), so a pre-v3 savedOrder has
+    // already been copied into settings; never write it back here.
+    delete p.savedOrder;
     try { window.localStorage.setItem(PREF_KEY, JSON.stringify(p)); return true; } catch (e) { return false; }
   }
-  /** The user's saved priority lists: { steps: [{key, cls, name}] | null, sleep: ... }. */
-  function getSavedOrder() { return loadPrefs().savedOrder; }
+  /** The user's saved priority lists (settings.sourcePriority): Promise<{ steps, sleep }>. */
+  function getSavedOrder() { return HT.healthData.getSavedOrder(); }
 
   // ---------- helpers ----------
   function el(tag, attrs, children) { return HT.app.el(tag, attrs, children); }
@@ -99,18 +105,20 @@
   }
 
   function importExport(file) {
-    var prefs = loadPrefs();
     var j = startJob('export');
     j.text = 'Reading the Apple Health export…';
-    var saved = prefs.savedOrder;
-    var p = (isHttp() && typeof Worker === 'function')
-      ? scanInWorker(file, saved, j).catch(function (e) { if (e && e.fallback && !j.cancelled) return scanOnMainThread(file, saved, j); throw e; })
-      : scanOnMainThread(file, saved, j);
+    var p = getSavedOrder().catch(function () { return { steps: null, sleep: null }; }).then(function (saved) {
+      if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
+      return (isHttp() && typeof Worker === 'function')
+        ? scanInWorker(file, saved, j).catch(function (e) { if (e && e.fallback && !j.cancelled) return scanOnMainThread(file, saved, j); throw e; })
+        : scanOnMainThread(file, saved, j);
+    });
     return p.then(function (res) {
       if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
       j.phase = 'saving'; j.text = 'Saving…'; notify();
-      var records = res.days.map(HT.healthAgg.toExportRecord);
-      return HT.db.putImported('steps', records).then(function () { return res; });
+      // One transaction: step counts -> `steps`, per-day sleep -> `healthDays` (schema v3).
+      var plan = HT.healthAgg.toExportPlan(res.days, HT.dates.nowIso());
+      return HT.db.putExportDays(plan).then(function () { return res; });
     }).then(function (res) {
       var sd = res.diag.scan;
       var summary = {
@@ -165,6 +173,7 @@
     j.text = 'Reading ' + plural(files.length, 'Shortcut file') + '…';
     notify();
     var results = [];
+    // Start from the one-time move of a pre-v3 saved order, before this job rewrites the prefs.
     return files.reduce(function (p, f) {
       return p.then(function () {
         if (j.cancelled) return;
@@ -173,7 +182,7 @@
           results.push({ name: f.name, parsed: HT.healthCsv.parseShortcutCsv(t) });
         }, function () { results.push({ name: f.name, parsed: { ok: false, error: 'The file could not be read.' } }); });
       });
-    }, Promise.resolve()).then(function () {
+    }, HT.healthData.migrateLegacyOrder()).then(function () {
       if (j.cancelled) throw HT.healthDates.importError('cancelled', 'Import cancelled.');
       // Two files for the same day in one batch: keep the one generated last.
       var byDay = {};
@@ -316,12 +325,16 @@
     function drawLast() {
       if (!alive) return;
       var prefs = loadPrefs();
-      HT.db.getAll('steps').then(function (recs) {
+      Promise.all([HT.db.getAll('steps'), HT.db.getAll('healthDays')]).then(function (both) {
         if (!alive) return;
+        // Schema v3: export days are in `steps` (step counts) and/or `healthDays` (sleep).
+        var recs = both[0].concat(both[1]);
         lastBox.textContent = '';
         lastBox.appendChild(el('h3', { text: 'What’s imported' }));
         var sc = recs.filter(function (r) { return r.origin === 'shortcut'; }).map(function (r) { return r.date; }).sort();
-        var ex = recs.filter(function (r) { return r.origin === 'export'; }).map(function (r) { return r.date; }).sort();
+        var exSet = {};
+        recs.forEach(function (r) { if (r.origin === 'export') exSet[r.date] = true; });
+        var ex = Object.keys(exSet).sort();
         var any = {};
         recs.forEach(function (r) { any[r.date] = true; });
         var ul = el('ul', { class: 'small' });
@@ -359,10 +372,15 @@
 
     // ----- source priority editor -----
     function drawPriority() {
-      if (!alive) return;
+      if (!alive) return Promise.resolve();
+      return getSavedOrder().catch(function () { return { steps: null, sleep: null }; }).then(function (savedOrder) {
+        if (alive) drawPriorityWith(savedOrder);
+      });
+    }
+    function drawPriorityWith(savedOrder) {
       prioBox.textContent = '';
       prioBox.appendChild(el('summary', { text: 'Data source priority' }));
-      prioBox.appendChild(el('p', { class: 'small', text: 'When two sources record the same minute (for example your Watch and your iPhone), the one higher in this list is used, as in the Health app. Sleep uses one source per night.' }));
+      prioBox.appendChild(el('p', { class: 'small', text: 'When two sources record the same minute (for example your Watch and your iPhone), the one higher in this list is used, as in the Health app. Sleep uses one source per night. The order is saved with your settings and included in backups.' }));
       var prefs = loadPrefs();
       var sources = prefs.sources || [];
       if (!sources.length) {
@@ -370,7 +388,7 @@
         return;
       }
       var work = {};
-      TYPES.forEach(function (t) { work[t[0]] = currentOrder(sources, t[0], prefs.savedOrder[t[0]]); });
+      TYPES.forEach(function (t) { work[t[0]] = currentOrder(sources, t[0], savedOrder[t[0]]); });
       TYPES.forEach(function (t) {
         var type = t[0], legendId = HT.app.nextId('ih-pr');
         var fs = el('fieldset', { 'aria-labelledby': legendId, style: 'margin-top:8px' });
@@ -410,21 +428,29 @@
       var saveBtn = el('button', { type: 'button', class: 'primary', text: 'Save order' });
       var resetBtn = el('button', { type: 'button', text: 'Reset to default' });
       saveBtn.addEventListener('click', function () {
-        var p = loadPrefs();
+        var order = {};
         TYPES.forEach(function (t) {
-          p.savedOrder[t[0]] = work[t[0]].map(function (s) { return { key: s.key, cls: s.cls, name: s.sourceName }; });
+          order[t[0]] = work[t[0]].map(function (s) { return { key: s.key, cls: s.cls, name: s.sourceName }; });
         });
-        msg.textContent = savePrefs(p)
-          ? 'Saved. Shortcut sleep uses it now; import the full export again to apply it to your history.'
-          : 'Could not save the order in this browser.';
+        saveBtn.disabled = true;
+        HT.healthData.saveSavedOrder(order).then(function () {
+          msg.textContent = 'Saved. Shortcut sleep uses it now; import the full export again to apply it to your history.';
+        }, function () {
+          msg.textContent = 'Could not save the order. Nothing was changed.';
+        }).then(function () { saveBtn.disabled = false; });
       });
       resetBtn.addEventListener('click', function () {
-        var p = loadPrefs();
-        p.savedOrder = { steps: null, sleep: null };
-        savePrefs(p);
-        drawPriority();
-        prioBox.open = true;
-        prioBox.appendChild(el('p', { class: 'small', role: 'status', text: 'Default order restored. Import the full export again to apply it to your history.' }));
+        resetBtn.disabled = true;
+        HT.healthData.saveSavedOrder(null).then(function () {
+          return drawPriority().then(function () {
+            if (!alive) return;
+            prioBox.open = true;
+            prioBox.appendChild(el('p', { class: 'small', role: 'status', text: 'Default order restored. Import the full export again to apply it to your history.' }));
+          });
+        }, function () {
+          resetBtn.disabled = false;
+          msg.textContent = 'Could not reset the order. Nothing was changed.';
+        });
       });
       prioBox.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, [saveBtn, resetBtn]));
       prioBox.appendChild(msg);
@@ -491,7 +517,7 @@
       el('summary', { text: 'How sleep and steps are worked out' }),
       el('ul', { class: 'small' }, [
         el('li', { text: 'Steps: each minute is counted once, from the highest source in your priority list, as the Health app does. Totals can still differ slightly from the Health app.' }),
-        el('li', { text: 'When a Shortcut file and the full export both cover a day, the Shortcut’s step count is shown, but for sleep the full export’s night is shown (it knows manual entries and which device recorded). Both are kept.' }),
+        el('li', { text: 'When a Shortcut file and the full export both cover a day, the Shortcut’s step count is shown, but for sleep the full export’s night is shown (it knows manual entries and which device recorded). If the export has only a nap or only time in bed for that day, the Shortcut’s night is shown, together with the export’s nap or time in bed. Both are kept.' }),
         el('li', { text: 'A Shortcut file older than one already imported for the same day is skipped.' }),
         el('li', { text: 'Sleep is counted only from “asleep” stages (Core, Deep, REM, Asleep), never from In Bed or Awake.' }),
         el('li', { text: 'A night belongs to the day you woke up. Waking at or after 18:00 counts toward the next day.' }),

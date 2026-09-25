@@ -23,6 +23,8 @@
   ];
 
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
+  /** Same rule as HT.db sanitize / HT.stats: integer 0–720 (A-005 Part 2). */
+  function validMinutes(v) { return isNum(v) && Math.floor(v) === v && v >= 0 && v <= 720; }
 
   /**
    * Pure: build the summary numbers from merged days (HT.trends.data.buildDays output).
@@ -61,7 +63,9 @@
           if (mg < lo) lo = mg; if (mg > hi) hi = mg;
           out.glucose.push({ date: d, time: m.time, carb: m.carb || null,
             entered: U.format(g.value, g.unit, g.unit),            // exactly as entered, with unit
-            display: g.unit === unit ? null : U.format(g.value, g.unit, unit) });
+            display: g.unit === unit ? null : U.format(g.value, g.unit, unit),
+            // A-005 Part 2: minutes from meal start, as the user reported it; null = not known.
+            minutesAfter: validMinutes(g.minutesAfter) ? g.minutesAfter : null });
         }
       });
     });
@@ -147,9 +151,11 @@
         var anyConv = s.glucose.some(function (g) { return g.display; });
         var head = ['Date', 'Meal time', 'Carb level', 'Reading as entered'];
         if (anyConv) head.push('In ' + s.unit);
+        head.push('Minutes after meal start');
         body.appendChild(T.dataTable('Glucose readings linked to meals', head, s.glucose.map(function (g) {
           var r = [F.longDate(g.date), HT.dates.formatTime(g.time), g.carb ? T.CARB_LABELS[g.carb] : 'Not set', g.entered];
           if (anyConv) r.push(g.display || g.entered);
+          r.push(g.minutesAfter === null ? '' : String(g.minutesAfter));   // blank when not known (A-005)
           return r;
         })));
       }
