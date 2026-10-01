@@ -184,11 +184,14 @@ p { margin: 8px 0; }
 }
 .tabbar a {
   flex: 1 1 0;
+  min-width: 0; /* T008-01: let the 5 tabs share the width instead of growing past the screen */
   min-height: var(--nav-h);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   color: var(--muted); text-decoration: none; font-size: 0.78rem; font-weight: 600;
 }
-.tabbar a svg { width: 24px; height: 24px; padding: 2px 14px; box-sizing: content-box; border-radius: 999px; }
+/* T008-01: at very large text the labels cap to the screen width (like iOS tab bars); wrap only as a last resort */
+.tabbar a span { font-size: min(1em, 4.2vw); line-height: 1.15; max-width: 100%; text-align: center; overflow-wrap: anywhere; }
+.tabbar a svg { width: 24px; height: 24px; padding: 2px min(14px, 3vw); box-sizing: content-box; border-radius: 999px; }
 .tabbar a[aria-current="page"] svg { background: var(--accent-soft); }
 .tabbar a[aria-current="page"] { color: var(--accent); }
 .tabbar a[aria-current="page"] span { text-decoration: underline; text-underline-offset: 3px; }
