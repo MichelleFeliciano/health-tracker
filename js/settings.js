@@ -125,6 +125,54 @@
     });
   }
 
+  // ---------- folding sections (B-008) ----------
+  // Every Settings section is a disclosure: a heading holding a real button with aria-expanded
+  // and aria-controls, and a body that is hidden when closed. All start closed; each section's
+  // open/closed state is remembered in localStorage (HT.app.prefGet/prefSet wrap it in
+  // try/catch, so blocked storage just means "closed"). A section's key is fixed, not its title.
+  var FOLD_PREF = 'fold.settings.';
+
+  /**
+   * Build a folding card. Returns { card, body, open(), adoptHeading() }.
+   * - title/headingId: the heading text and the id that aria-labelledby points to.
+   * - adoptHeading(): for sections drawn by another module into `body` (caffeine, Apple Health
+   *   import), move that module's first <h2> up into the fold header (keeping its id), so the
+   *   title appears once and the module's own code stays unchanged.
+   */
+  function foldCard(key, title, headingId) {
+    var el = HT.app.el, A = HT.app;
+    var bodyId = A.nextId('fold-' + key);
+    var titleSpan = el('span', { text: title || '' });
+    var btn = el('button', { type: 'button', class: 'fold-btn', 'aria-expanded': 'false', 'aria-controls': bodyId }, [titleSpan]);
+    var head = el('h2', { class: 'fold-h', id: headingId || null }, [btn]);
+    var body = el('div', { class: 'fold-body', id: bodyId, hidden: true });
+    var card = el('section', { class: 'card fold', 'data-fold': key, 'aria-labelledby': headingId || null }, [head, body]);
+    function set(open, remember) {
+      body.hidden = !open;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      card.setAttribute('data-open', open ? 'true' : 'false');
+      if (remember) A.prefSet(FOLD_PREF + key, open ? '1' : '0');
+    }
+    btn.addEventListener('click', function () { set(body.hidden, true); });
+    // HT.app.reveal(node) calls this when code must focus something inside a closed section.
+    body._reveal = function () { set(true, true); };
+    set(A.prefGet(FOLD_PREF + key) === '1', false);
+    return {
+      card: card,
+      body: body,
+      button: btn,
+      open: function () { set(true, true); },
+      adoptHeading: function () {
+        var h = body.querySelector('h2');
+        if (!h || h.parentNode !== body) return;
+        titleSpan.textContent = h.textContent;
+        if (h.id) { head.id = h.id; card.setAttribute('aria-labelledby', h.id); h.removeAttribute('id'); }
+        body.removeAttribute('aria-labelledby');
+        h.remove();
+      }
+    };
+  }
+
   function render(container) {
     var A = HT.app, D = HT.dates, U = HT.units, el = A.el;
     var alive = true;
@@ -145,25 +193,33 @@
 
     // ---------- glucose unit ----------
     var unitName = A.nextId('unit');
-    var unitFs = el('fieldset', { class: 'card' }, [el('legend', { text: 'Glucose unit' })]);
+    var unitFold = foldCard('unit', 'Glucose unit', 'gu-h');
+    // The fold header shows the title; the legend stays for the radio group's name.
+    var unitFs = el('fieldset', null, [el('legend', { class: 'visually-hidden', text: 'Glucose unit' })]);
     var seg = el('div', { class: 'seg' });
     U.UNITS.forEach(function (u) {
       var r = el('input', { type: 'radio', name: unitName, value: u, checked: s.glucoseUnit === u });
       r.addEventListener('change', function () {
         if (!r.checked) return;
         s.glucoseUnit = u;
-        save().then(drawRange, function () {});
+        save().then(function () { drawRange(); }, function () {});
       });
       seg.appendChild(el('label', { class: 'choice' }, [r, el('span', { text: u })]));
     });
     unitFs.appendChild(el('p', { class: 'field-hint', text: 'Readings are shown in this unit. 1 mmol/L = 18.0156 mg/dL.' }));
     unitFs.appendChild(seg);
-    container.appendChild(unitFs);
+    unitFold.body.appendChild(unitFs);
+    container.appendChild(unitFold.card);
 
     // ---------- glucose range ----------
-    var rangeCard = el('section', { class: 'card', 'aria-labelledby': 'range-h' });
-    container.appendChild(rangeCard);
-    function drawRange() {
+    var rangeFold = foldCard('range', 'My glucose range (optional)', 'range-h');
+    var rangeCard = rangeFold.body;
+    container.appendChild(rangeFold.card);
+    // B-008: Save range / Clear range redraw this section, which removed the focused button and
+    // dropped focus to <body>. drawRange(key) puts focus back on the same button after the redraw
+    // (opening the fold first via HT.app.reveal). Redraws from elsewhere (unit switch, restore)
+    // pass no key and leave focus where it is.
+    function drawRange(focusKey) {
       if (!alive) return;
       rangeCard.textContent = '';
       var unit = s.glucoseUnit;
@@ -176,7 +232,6 @@
       lowIn.value = origLow;
       hiIn.value = origHigh;
       var err = el('div', { class: 'field-error', role: 'alert' });
-      rangeCard.appendChild(el('h2', { id: 'range-h', style: 'margin-top:0', text: 'My glucose range (optional)' }));
       rangeCard.appendChild(el('p', { class: 'field-hint', text: 'Only fill this in if you and your care team chose a range. Leave it blank and the app won’t compare readings to anything.' }));
 
       // T001-13: explicit opt-in, off by default. Saved as soon as it is ticked or unticked.
@@ -207,7 +262,7 @@
       ]));
       rangeCard.appendChild(err);
       rangeCard.appendChild(el('div', { class: 'row', style: 'margin-top:10px' }, [
-        el('button', { type: 'button', class: 'primary', text: 'Save range', onclick: function () {
+        el('button', { type: 'button', class: 'primary', 'data-fk': 'save', text: 'Save range', onclick: function () {
           err.textContent = '';
           var lo = U.parseGlucose(lowIn.value, unit), hi = U.parseGlucose(hiIn.value, unit);
           if (!lo.ok) { err.textContent = 'Lowest: ' + lo.error; lowIn.focus(); return; }
@@ -222,36 +277,41 @@
           s.rangeLowMgdl = effLow;
           s.rangeHighMgdl = effHigh;
           // Saving a range never turns the note on (T001-13); rangeNoticeOn is left as it is.
-          save('Range saved').then(drawRange, function () {});
+          save('Range saved').then(function () { drawRange('save'); }, function () {});
         } }),
-        el('button', { type: 'button', text: 'Clear range', onclick: function () {
+        el('button', { type: 'button', 'data-fk': 'clear', text: 'Clear range', onclick: function () {
           // Clearing the range also switches the note off (T001-13 fix direction).
           s.rangeLowMgdl = null; s.rangeHighMgdl = null; s.rangeNoticeOn = false;
-          save('Range cleared').then(drawRange, function () {});
+          save('Range cleared').then(function () { drawRange('clear'); }, function () {});
         } })
       ]));
       rangeCard.appendChild(el('p', { class: 'small', text: TEXT.emergency }));
+      if (focusKey) {
+        var t = rangeCard.querySelector('[data-fk="' + focusKey + '"]');
+        if (t) { A.reveal(t); try { t.focus(); } catch (e) { /* ignore */ } }
+      }
     }
     drawRange();
 
     // ---------- caffeine (owned by js/caffeine-ui.js, A-010 §6) ----------
-    var cafCard = el('section', { class: 'card' });
+    var cafFold = foldCard('caffeine', 'Caffeine', null);
     var caf = null;
     if (HT.caffeineUI && typeof HT.caffeineUI.renderSettingsCard === 'function') {
-      container.appendChild(cafCard);
-      try { caf = HT.caffeineUI.renderSettingsCard(cafCard); } catch (e) { cafCard.remove(); }
+      container.appendChild(cafFold.card);
+      try { caf = HT.caffeineUI.renderSettingsCard(cafFold.body); cafFold.adoptHeading(); } catch (e) { cafFold.card.remove(); }
     }
 
     // ---------- backup ----------
     var statusP = el('p', { text: backupStatusText() });
-    container.appendChild(el('section', { class: 'card', 'aria-labelledby': 'bk-h' }, [
-      el('h2', { id: 'bk-h', style: 'margin-top:0', text: 'Backup' }),
+    var bkFold = foldCard('backup', 'Backup', 'bk-h');
+    [
       el('p', { class: 'field-hint', text: 'Your entries are stored only on this device. A backup is a file you can keep in Files or iCloud Drive and restore later. It contains your health entries, so keep it private.' }),
       statusP,
       el('button', { type: 'button', class: 'primary', text: 'Download backup file', onclick: function () {
         exportBackup().then(function () { statusP.textContent = backupStatusText(); }, function () {});
       } })
-    ]));
+    ].forEach(function (n) { bkFold.body.appendChild(n); });
+    container.appendChild(bkFold.card);
 
     // ---------- restore ----------
     var fileId = A.nextId('file'), modeName = A.nextId('mode');
@@ -260,9 +320,10 @@
     var mReplace = el('input', { type: 'radio', name: modeName, value: 'replace' });
     var result = el('div', { role: 'status', 'aria-live': 'polite' });
     var restoreBtn = el('button', { type: 'button', class: 'primary', text: 'Restore' });
-    container.appendChild(el('section', { class: 'card', 'aria-labelledby': 'rs-h' }, [
-      el('h2', { id: 'rs-h', style: 'margin-top:0', text: 'Restore from a backup' }),
-      el('label', { for: fileId, text: 'Backup file' }), fileIn,
+    var rsFold = foldCard('restore', 'Restore from a backup', 'rs-h');
+    container.appendChild(rsFold.card);
+    [
+      el('label', { for: fileId, style: 'margin-top:0', text: 'Backup file' }), fileIn,
       el('fieldset', { style: 'margin-top:10px' }, [
         el('legend', { text: 'How to restore' }),
         el('div', { class: 'seg' }, [
@@ -273,7 +334,7 @@
       ]),
       el('div', { style: 'margin-top:10px' }, [restoreBtn]),
       result
-    ]));
+    ].forEach(function (n) { rsFold.body.appendChild(n); });
     restoreBtn.addEventListener('click', function () {
       result.textContent = '';
       var f = fileIn.files && fileIn.files[0];
@@ -319,11 +380,12 @@
     // ---------- storage ----------
     var persistP = el('p', { text: 'Checking…' });
     var persistBtn = el('button', { type: 'button', text: 'Ask the browser to keep my data', hidden: true });
-    container.appendChild(el('section', { class: 'card', 'aria-labelledby': 'st-h' }, [
-      el('h2', { id: 'st-h', style: 'margin-top:0', text: 'Storage on this device' }),
+    var stFold = foldCard('storage', 'Storage on this device', 'st-h');
+    [
       persistP, persistBtn,
       el('p', { class: 'field-hint', text: 'On iPhone, the Home Screen app and Safari keep separate data. Use the app from the Home Screen icon so everything stays in one place.' })
-    ]));
+    ].forEach(function (n) { stFold.body.appendChild(n); });
+    container.appendChild(stFold.card);
     function drawPersist(p) {
       if (!alive) return;
       if (p === null) { persistP.textContent = 'This browser can’t promise to keep data. Regular backups are the safe choice.'; persistBtn.hidden = true; }
@@ -334,8 +396,9 @@
     A.persistedState().then(drawPersist);
 
     // ---------- Apple Health import (owned by js/import-health.js) ----------
-    var importSlot = el('section', { class: 'card', 'aria-labelledby': 'ih-h' });
-    container.appendChild(importSlot);
+    var ihFold = foldCard('health-import', 'Apple Health import', null);
+    var importSlot = ihFold.body;
+    container.appendChild(ihFold.card);
     var importCleanup = null;
     if (HT.importHealth && typeof HT.importHealth.render === 'function') {
       try { importCleanup = HT.importHealth.render(importSlot); } catch (e) {
@@ -345,15 +408,19 @@
       importSlot.appendChild(el('h2', { id: 'ih-h', style: 'margin-top:0', text: 'Apple Health import' }));
       importSlot.appendChild(el('p', { class: 'muted', text: 'Coming soon: import sleep and steps from Apple Health.' }));
     }
+    ihFold.adoptHeading();
 
     // ---------- about ----------
-    container.appendChild(el('section', { class: 'card', 'aria-labelledby': 'ab-h' }, [
-      el('h2', { id: 'ab-h', style: 'margin-top:0', text: 'About this app' }),
+    var abFold = foldCard('about', 'About this app', 'ab-h');
+    [
       el('p', { text: 'Not medical advice.' }),
       el('p', { class: 'small', text: TEXT.disclaimer }),
       el('p', { class: 'small', text: TEXT.emergency }),
       el('p', { class: 'small muted', text: 'Everything stays on this device. The app sends nothing anywhere.' })
-    ]));
+    ].forEach(function (n) { abFold.body.appendChild(n); });
+    container.appendChild(abFold.card);
+    // The About section starts folded, so the short note stays visible below the sections.
+    container.appendChild(el('p', { class: 'disclaimer', text: 'Not medical advice.' }));
 
     return function () {
       alive = false;
@@ -370,6 +437,8 @@
     daysSinceBackup: daysSinceBackup,
     backupStatusText: backupStatusText,
     rangeOrderOk: rangeOrderOk,            // exposed for tests (A-005 R1-3)
+    foldCard: foldCard,                    // exposed for tests (B-008)
+    FOLD_PREF: FOLD_PREF,
     replaceConfirmText: replaceConfirmText, // exposed for tests (A-005 R1-1/R1-2)
     replaceResultText: replaceResultText,
     CAFFEINE_OLD_BACKUP: CAFFEINE_OLD_BACKUP

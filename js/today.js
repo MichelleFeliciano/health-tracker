@@ -85,7 +85,7 @@
 
     // ---------- layout ----------
     var windowText = isToday ? 'today, so far' : 'on this day';
-    var root = el('div');
+    var root = el('div', { class: 'today-view' });
     container.appendChild(root);
 
     // Day navigation
@@ -118,10 +118,22 @@
     root.appendChild(el('p', { class: 'disclaimer', text: 'A personal log, not medical advice. Ratings are for spotting your own patterns and have no cut-offs.' }));
 
     // ---------- ratings ----------
+    /**
+     * One 0–10 rating card. B-008: once answered (a number or "Hard to tell") the card folds to
+     * a one-line summary ("Anxiety: 4") with a Change button (aria-expanded). Folding only hides
+     * the fieldset; every input stays in the DOM, so no data is lost and autosave is unchanged.
+     * Unanswered cards stay open. Focus: after a pointer tap, or Enter/Space on a choice, the card
+     * folds and focus moves to Change. Arrow keys only move the choice (the card stays open so
+     * keyboard users can keep choosing); leaving the card with Tab folds it without moving focus.
+     * Change opens the card and focuses the chosen value; Change again folds it.
+     */
     function ratingControl(m) {
       var name = A.nextId('r-' + m.key);
       var legendId = A.nextId('lg');
-      var fs = el('fieldset', { class: 'rating', 'aria-describedby': legendId + '-d' });
+      var fsId = A.nextId('rf-' + m.key);
+      var sumId = A.nextId('rs-' + m.key);
+      var card = el('div', { class: 'rating-card m-' + m.key });
+      var fs = el('fieldset', { class: 'rating', id: fsId, 'aria-describedby': legendId + '-d' });
       fs.appendChild(el('legend', { class: 'question', text: m.name + ' — ' + m.q + ' ' + windowText + '?' }));
       fs.appendChild(el('div', { class: 'ends', id: legendId + '-d' }, [
         el('span', { text: m.low }), el('span', { text: m.high })
@@ -145,11 +157,43 @@
       ]));
       fs.appendChild(el('p', { class: 'field-hint', text: m.dir }));
 
+      // Folded summary row (hidden while the rating is unanswered).
+      var sumText = el('span', { id: sumId });
+      var changeBtn = el('button', { type: 'button', class: 'link', text: 'Change', 'aria-expanded': 'true',
+        'aria-controls': fsId, 'aria-label': 'Change ' + m.name.toLowerCase() + ' rating', 'aria-describedby': sumId });
+      var sumRow = el('div', { class: 'rating-sum', hidden: true }, [
+        el('span', { class: 'rating-sum-text' }, [el('span', { class: 'metric-dot', 'aria-hidden': 'true' }), sumText]),
+        changeBtn
+      ]);
+      card.appendChild(sumRow);
+      card.appendChild(fs);
+
+      function answered() {
+        return log[m.key] !== null || log.hardToTell.indexOf(m.key) >= 0;
+      }
+      function summaryText() {
+        return m.name + ': ' + (log[m.key] !== null ? log[m.key] : 'hard to tell');
+      }
+      function setOpen(open) {
+        fs.hidden = !open;
+        card.classList.toggle('folded', !open);
+        changeBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      /** Fold an answered card; optionally move focus to its Change button. */
+      function fold(moveFocus) {
+        if (!answered()) return;
+        setOpen(false);
+        if (moveFocus) { try { changeBtn.focus(); } catch (e) { /* ignore */ } }
+      }
       function sync() {
         var v = log[m.key];
         var isUnsure = v === null && log.hardToTell.indexOf(m.key) >= 0;
         inputs.forEach(function (x) { x.checked = isUnsure ? x.value === 'unsure' : (v !== null && x.value === String(v)); });
         status.textContent = v !== null ? '' : isUnsure ? 'Saved as not answered.' : 'Not answered yet.';
+        var done = answered();
+        sumRow.hidden = !done;
+        if (done) sumText.textContent = summaryText();
+        else setOpen(true);   // unanswered cards always stay open
       }
       fs.addEventListener('change', function (ev) {
         var t = ev.target;
@@ -161,14 +205,54 @@
         sync();
         scheduleSave(LOG_DEBOUNCE_MS);
       });
+
+      // How the choice was made decides whether to fold now (see the doc comment above).
+      var byPointer = false;
+      function onPointer() { byPointer = true; }
+      fs.addEventListener('pointerdown', onPointer);
+      fs.addEventListener('mousedown', onPointer);
+      // keyDownOn: the radio that received the keydown. A keyup only folds when its keydown also
+      // happened on that radio; otherwise Enter on Change (which opens the card and moves focus to
+      // a radio during the keydown) would fold the card again on the keyup.
+      var keyDownOn = null;
+      fs.addEventListener('keydown', function (ev) { byPointer = false; keyDownOn = ev.target; });
+      // The radio's click event runs before its change event, so the fold waits one tick and
+      // then reads the saved answer. Tapping the value that is already chosen also folds.
+      function foldSoon() { setTimeout(function () { if (alive) fold(true); }, 0); }
+      fs.addEventListener('click', function (ev) {
+        var t = ev.target;
+        if (!t || t.name !== name) return;          // only a radio's own click
+        var p = byPointer;
+        byPointer = false;
+        if (p) foldSoon();
+      });
+      // Enter/Space fold after the key is released (Space checks a radio on release), so the
+      // release never lands on the Change button.
+      fs.addEventListener('keyup', function (ev) {
+        var t = ev.target, own = keyDownOn === t;
+        keyDownOn = null;
+        if (!t || t.name !== name || !own) return;
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') foldSoon();
+      });
+      card.addEventListener('focusout', function (ev) {
+        var to = ev.relatedTarget;
+        if (to && !card.contains(to) && !fs.hidden) fold(false);
+      });
+      changeBtn.addEventListener('click', function () {
+        if (!fs.hidden) { fold(false); return; }
+        setOpen(true);
+        var chosen = inputs.filter(function (x) { return x.checked; })[0] || inputs[0];
+        try { chosen.focus(); } catch (e) { /* ignore */ }
+      });
       clearBtn.addEventListener('click', function () {
         log[m.key] = null;
         log.hardToTell = log.hardToTell.filter(function (k) { return k !== m.key; });
         sync();
         scheduleSave(LOG_DEBOUNCE_MS);
       });
-      fs._sync = sync;
-      return fs;
+      card._sync = sync;
+      card._fold = fold;
+      return card;
     }
 
     // ---------- tags ----------
@@ -239,13 +323,13 @@
       var s = settingsNow();
       meals.forEach(function (m) {
         var main = el('div', { class: 'meal-main' }, [
-          el('strong', { text: D.formatTime(m.time) }), ' ',
+          el('strong', { class: 'meal-time', text: D.formatTime(m.time) }), ' ',
           el('span', { text: mealSummary(m) }),
           m.note ? el('div', { class: 'small muted', text: m.note }) : null
         ]);
         var li = el('li', null, [
           main,
-          el('div', { class: 'row' }, [
+          el('div', { class: 'row meal-actions' }, [
             el('button', { type: 'button', text: 'Edit', 'aria-label': 'Edit meal at ' + D.formatTime(m.time), onclick: function () { openForm(m); } }),
             el('button', { type: 'button', class: 'danger', text: 'Delete', 'aria-label': 'Delete meal at ' + D.formatTime(m.time), onclick: function () { removeMeal(m); } })
           ])
@@ -405,6 +489,7 @@
         var c = ratingControl(m);
         ratingsSec.appendChild(c);
         c._sync();
+        c._fold(false);   // B-008: answered cards start folded (today and past days)
       });
       buildTags();
       buildMeals();

@@ -62,6 +62,17 @@
   function prefGet(k) { try { return window.localStorage.getItem('ht.' + k); } catch (e) { return null; } }
   function prefSet(k, v) { try { window.localStorage.setItem('ht.' + k, v); } catch (e) { /* ignore */ } }
 
+  /**
+   * B-008: open any closed folding section (Settings) that contains `node`, so code that
+   * restores focus (T006-01) always lands on a visible element. A fold body marks itself with
+   * a _reveal() function; other hidden ancestors are left alone.
+   */
+  function reveal(node) {
+    for (var n = node; n && n !== document; n = n.parentNode) {
+      if (n.hidden && typeof n._reveal === 'function') { try { n._reveal(); } catch (e) { /* ignore */ } }
+    }
+  }
+
   // ---------- router ----------
   var cleanup = null;
   var firstRoute = true;
@@ -267,6 +278,7 @@
     saveError: saveError,
     prefGet: prefGet,
     prefSet: prefSet,
+    reveal: reveal,
     go: go,
     route: route,
     isHttp: isHttp,

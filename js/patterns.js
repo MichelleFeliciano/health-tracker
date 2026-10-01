@@ -12,6 +12,14 @@
  * partial night's figure is known to be too low — R-001 §6.1 step 10).
  * Never shown: p values, "significant", "causes", "because", advice, red/green, condition
  * names, thresholds (§5.6).
+ * Caffeine pairs (docs/team/analysis/A-010-caffeine-spec.md §8, same engine, stats.js unchanged):
+ *  - P13 late caffeine → sleep: X(E) = 0/1 late flag per caffeine-logged evening E (D6),
+ *    Y = usable sleep on WAKE-DATE E+1, so the stored-date lag is +1 (R-001 §6.1, 18:00
+ *    boundary; same offset as P5). Run as a tag (split, W state, ≥ 5 / ≥ 5 gate). Needs a
+ *    bedtime from 18:00 to 05:59 (states noBed / bedRange are never tested).
+ *  - P14 caffeine → anxiety: daily mg vs same-day anxiety, lag 0, median split shown as ceil.
+ *  - Both appear only if the window has at least one caffeine-logged day. BH runs over every
+ *    pair that reached state C (m ≤ 14).
  * Classic script. Exposes window.HT.patterns = { render(container), analyze, ... }.
  * Never logs health data.
  */
@@ -86,6 +94,55 @@
         phrase: 'on days you marked “' + t[1] + '”' },
       y: ratingY('anxiety') });
   });
+  // ---------------- caffeine pairs (A-010 §8.5 templates, exact) ----------------
+  var SLEEP_NEXT_Y = { key: 'sleepH', name: 'sleep', meanWord: 'sleep that night', plusWord: 'sleep',
+    up: 'longer', down: 'shorter', fmt: function (h) { return fmtHM(h * 60); } };
+  /** P13 with the current cut-off N and bedtime baked into its wording. */
+  function lateCaffeinePair(N, bedtime) {
+    var w = 'within ' + N + ' hours of your usual bedtime';
+    return { id: 'P13', lag: 1, late: true, cutoffHours: N, bedtime: bedtime || null,
+      x: { key: 'lateCaffeine', name: 'Late caffeine',
+        low: function () { return 'you had no caffeine ' + w; },
+        high: function () { return 'you had caffeine ' + w; },
+        phrase: 'on nights after caffeine ' + w },
+      y: SLEEP_NEXT_Y };
+  }
+  var CAFFEINE_PAIR = { id: 'P14', lag: 0, caffeine: true,
+    x: { key: 'caffeineMg', name: 'Caffeine',
+      // mg are whole numbers, so "x < m" ⇔ "x < ceil(m)" (same rule as steps).
+      low: function (m) { return 'you logged less than ' + fmtSplitSteps(m) + ' mg of caffeine'; },
+      high: function (m) { return 'you logged ' + fmtSplitSteps(m) + ' mg of caffeine or more'; },
+      phrase: 'on days you logged more caffeine' },
+    y: ratingY('anxiety') };
+  var CUTOFF_DEFAULT = 8;
+  function isHHMM(t) { return typeof t === 'string' && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t); }
+  /** Bedtimes 18:00–05:59 keep "the night after evening E" on wake-date E+1 (A-010 §8, D6). */
+  function bedtimeInRange(t) { var m = +t.slice(0, 2) * 60 + +t.slice(3, 5); return m >= 1080 || m < 360; }
+  function cutoffOf(settings) {
+    var n = settings && settings.caffeineCutoffHours;
+    return typeof n === 'number' && Math.floor(n) === n && n >= 4 && n <= 12 ? n : CUTOFF_DEFAULT;
+  }
+  /** One daily pair through the engine, with the pair's own lag and tag mode. */
+  function runPair(pair, x, y, start, end) {
+    return HT.stats.analyzeDaily({ x: x, y: y, lag: pair.lag, start: start, end: end, tag: !!(pair.tag || pair.late) });
+  }
+  function flagCounts(flags) {
+    var c = { present: 0, absent: 0 };
+    Object.keys(flags).forEach(function (d) { if (flags[d] === 1) c.present++; else c.absent++; });
+    return c;
+  }
+  /** P13 result: noBed / bedRange / tagGate states before the engine (A-010 §8.1). */
+  function analyzeLate(pair, days, ser) {
+    if (!isHHMM(pair.bedtime)) return { state: 'noBed', n: 0 };
+    if (!bedtimeInRange(pair.bedtime)) return { state: 'bedRange', n: 0 };
+    var flags = HT.trends.data.lateFlags(days, pair.bedtime, pair.cutoffHours), c = flagCounts(flags);
+    if (c.present < MIN_TAG_DAYS || c.absent < MIN_TAG_DAYS) return { state: 'tagGate', present: c.present, absent: c.absent, n: 0 };
+    return runPair(pair, flags, ser.sleepH, days.start, days.end);
+  }
+  function anyCaffeineLogged(days) {
+    return days.dates.some(function (d) { var c = days.byDate[d].caffeine; return !!(c && c.logged); });
+  }
+
   var MEAL_PAIR = { id: 'P12', meal: true,
     x: { name: 'Carb level', phrase: 'after meals you marked as higher-carb' },
     y: { name: 'glucose', plusWord: 'glucose reading', up: 'higher', down: 'lower' } };
@@ -98,7 +155,8 @@
     var D = HT.trends.data, out = {
       sleepH: D.series(days, 'sleepH'), steps: D.series(days, 'steps'),
       anxiety: D.series(days, 'anxiety'), mood: D.series(days, 'mood'),
-      energy: D.series(days, 'energy'), stress: D.series(days, 'stress'), tags: {}, tagCounts: {}
+      energy: D.series(days, 'energy'), stress: D.series(days, 'stress'), tags: {}, tagCounts: {},
+      caffeineMg: D.series(days, 'caffeineMg')
     };
     TAG_PAIRS.forEach(function (t) {
       var s = {}, yes = 0, no = 0;
@@ -117,6 +175,20 @@
   function sentence(pair, r, unit) {
     var T = title(pair);
     if (pair.meal) return mealSentence(pair, r, unit);
+    if (pair.late) {   // P13 special states, A-010 §8.1 and §8.5 (exact text)
+      var within = 'within ' + pair.cutoffHours + ' hours of your usual bedtime';
+      if (r.state === 'noBed') return 'Late caffeine and sleep: set your usual bedtime in Settings to see this comparison.';
+      if (r.state === 'bedRange') return 'Late caffeine and sleep: this comparison needs a usual bedtime between 6 PM and 6 AM. Each night is dated by the day you wake up.';
+      if (r.state === 'tagGate') {
+        return 'Late caffeine and sleep: not enough days yet (' + r.present + ' evenings with caffeine ' + within + ' and ' +
+          r.absent + ' without; at least ' + MIN_TAG_DAYS + ' of each are needed).';
+      }
+      if (r.state === 'W') return 'Late caffeine and sleep: your evenings with late caffeine fell on the same days of the week every week, so this can’t be told apart from the day of the week.';
+      if (r.state === 'V' && r.constant === 'x') {
+        return 'Late caffeine and sleep: ' + (r.constantValue === 1 ? 'every' : 'no') + ' evening with sleep recorded the next night had caffeine ' +
+          within + ', so there is nothing to compare yet.';
+      }
+    }
     if (r.state === 'tagGate') {
       return T + ': not enough days yet (' + r.present + ' marked and ' + r.absent + ' not marked; at least ' +
         MIN_TAG_DAYS + ' of each are needed).';   // A-004 §3 item 3 / L3
@@ -201,10 +273,23 @@
     return t;
   }
 
+  /**
+   * P13 card note (A-010 §8.5), shown once a bedtime in range is set. The bedtime is shown in
+   * the app's time format (HT.dates.formatTime).
+   */
+  function lateNote(pair, r) {
+    if (!pair || !pair.late || !r || r.state === 'noBed' || r.state === 'bedRange') return null;
+    var t = pair.bedtime;
+    try { if (HT.dates && HT.dates.formatTime) t = HT.dates.formatTime(pair.bedtime); } catch (e) { /* keep HH:MM */ }
+    return 'Uses your current bedtime (' + t + ') and ' + pair.cutoffHours + '-hour setting for every day shown. Each evening is matched with the night that follows it.';
+  }
+
   // ---------------- run every pair, then BH across the tested ones ----------------
   /**
-   * days: HT.trends.data.buildDays output covering the window. opts: { unit }.
-   * Returns [{ pair, result, sentence, detail }] in PAIRS order, P12 last.
+   * days: HT.trends.data.buildDays output covering the window.
+   * opts: { unit, settings } (settings default to HT.state.settings; used for P13's bedtime and
+   * cut-off). Returns [{ pair, result, sentence, detail }] in PAIRS order, then P12, then P13
+   * and P14 when the window has at least one caffeine-logged day (A-010 §8.3).
    */
   function analyze(days, opts) {
     var S = HT.stats, ser = buildSeries(days), results = [];
@@ -213,16 +298,24 @@
       if (p.tag) {
         var c = ser.tagCounts[p.tag];
         if (c.present < MIN_TAG_DAYS || c.absent < MIN_TAG_DAYS) r = { state: 'tagGate', present: c.present, absent: c.absent, n: 0 };
-        else r = S.analyzeDaily({ x: ser.tags[p.tag], y: ser[p.y.key], lag: p.lag, start: days.start, end: days.end, tag: true });
+        else r = runPair(p, ser.tags[p.tag], ser[p.y.key], days.start, days.end);
       } else {
-        r = S.analyzeDaily({ x: ser[p.x.key], y: ser[p.y.key], lag: p.lag, start: days.start, end: days.end });
+        r = runPair(p, ser[p.x.key], ser[p.y.key], days.start, days.end);
       }
       results.push({ pair: p, result: r });
     });
     var meals = [];
     days.dates.forEach(function (d) { days.byDate[d].meals.forEach(function (m) { meals.push(m); }); });
     results.push({ pair: MEAL_PAIR, result: S.analyzeMeals(meals, HT.units ? HT.units.MGDL_PER_MMOL : 18.0156) });
-    S.applyBH(results.map(function (x) { return x.result; }));            // A-003 §5.4 step 11, P1–P12
+    if (anyCaffeineLogged(days)) {                                        // A-010 §8.3 visibility
+      var st = (opts && opts.settings) || (HT.state && HT.state.settings) || {};
+      var p13 = lateCaffeinePair(cutoffOf(st), st.caffeineBedtime);
+      results.push({ pair: p13, result: analyzeLate(p13, days, ser) });
+      results.push({ pair: CAFFEINE_PAIR, result: runPair(CAFFEINE_PAIR, ser.caffeineMg, ser.anxiety, days.start, days.end) });
+    }
+    // A-003 §5.4 step 11 / A-010 §8.4: one BH family of every pair (P1–P14) that reached state C
+    // in this run, so m ≤ 14. noBed / bedRange / tagGate / W never enter it.
+    S.applyBH(results.map(function (x) { return x.result; }));
     var unit = (opts && opts.unit) || 'mg/dL';
     results.forEach(function (x) { x.sentence = sentence(x.pair, x.result, unit); x.detail = detail(x.pair, x.result); });
     return results;
@@ -240,7 +333,8 @@
     { states: ['C+'], id: 'pt-found', heading: 'Patterns in your records' },
     { states: ['C0'], id: 'pt-c0', heading: 'No clear pattern yet' },
     { states: ['B'], id: 'pt-b', heading: 'Early look (too few days to tell)' },
-    { states: ['V', 'W', 'A', 'tagGate'], id: 'pt-a', heading: 'Still collecting days' }   // W: A-004 M2
+    // W: A-004 M2. noBed / bedRange: P13 without a usable bedtime (A-010 §8.1).
+    { states: ['V', 'W', 'A', 'tagGate', 'noBed', 'bedRange'], id: 'pt-a', heading: 'Still collecting days' }
   ];
 
   function render(container) {
@@ -280,6 +374,8 @@
             el('p', { text: x.sentence })
           ]);
           if (x.pair.meal) li.appendChild(el('p', { class: 'small muted', text: mealNote(x.result) }));
+          var ln = lateNote(x.pair, x.result);
+          if (ln) li.appendChild(el('p', { class: 'small muted', text: ln }));
           if (x.detail) li.appendChild(el('details', null, [el('summary', { text: 'More detail' }), el('p', { class: 'small', text: x.detail })]));
           list.appendChild(li);
         });
@@ -302,9 +398,14 @@
     sentence: sentence,
     detail: detail,
     mealNote: mealNote,
+    lateNote: lateNote,
     loggedDayCount: loggedDayCount,
+    runPair: runPair,
+    lateCaffeinePair: lateCaffeinePair,
+    bedtimeInRange: bedtimeInRange,
     PAIRS: PAIRS,
     MEAL_PAIR: MEAL_PAIR,
+    CAFFEINE_PAIR: CAFFEINE_PAIR,
     FOOTER: FOOTER,
     WINDOW_DAYS: WINDOW_DAYS
   };

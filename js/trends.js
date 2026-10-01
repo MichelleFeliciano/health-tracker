@@ -15,6 +15,10 @@
  *  - Missing days are gaps, never 0. "Hard to tell" is stored as null and counts as missing
  *    [A-003 §5.1].
  *  - No colour-only meaning: every chart has one series, a text summary and a data table.
+ *  - Caffeine card (A-010 §7): an unlogged day is a gap; a "No caffeine" day is a real 0 (the
+ *    2 px stub). A neutral 400 mg gridline (A-009 §3(d) reference; decisions.md 2026-09-25:
+ *    "shown as a neutral gridline with no alerts") and a dashed step line for the user's own
+ *    target (HT.caffeineCore.targetOn, A-010 §4 + A-011). No red/amber, no .notice (U-1).
  * Classic script. Exposes window.HT.trends = { render(container), data, ... }.
  * Never logs health data.
  */
@@ -35,6 +39,10 @@
     'work-school': 'Work / school', 'caregiving': 'Caregiving', 'other': 'Other'
   };
   var CARB_LABELS = { low: 'Low', med: 'Medium', high: 'High' };
+  // 400 mg/day: the general adult reference amount (A-009 §3(d); W11). Drawn only as a neutral,
+  // labelled gridline; never a limit, alert or colour change (A-010 §7, U-1).
+  var CAF_REF_MG = 400;
+  var CAF_ESTIMATE_NOTE = 'Amounts are estimates from public food databases and product labels.';
 
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
 
@@ -124,16 +132,21 @@
 
   /**
    * Merge raw inputs into one object per date in [start, end].
-   * raw = { logs: dailyLog[], meals: meal[], steps: stepRecord[], sleep: SleepDay[] }
-   * Returns { start, end, dates: [...], byDate: { date: Day } } where Day =
+   * raw = { logs: dailyLog[], meals: meal[], steps: stepRecord[], sleep: SleepDay[],
+   *         caffeine?: entry[], caffeineDays?: dayMark[], caffeinePlan?: plan|null }
+   * Returns { start, end, dates: [...], byDate: { date: Day }, caffeinePlan } where Day =
    * { date, log|null, logged, ratings{k: n|null}, hardToTell[], tags[], meals[], steps|null,
-   *   stepsOrigin, stepsSource, sleep|null (normalised row) }.
+   *   stepsOrigin, stepsSource, sleep|null (normalised row),
+   *   caffeine: { logged, mg|null, none, headache, tired, count, entries[], target|null } }.
+   * Caffeine day rules come from HT.caffeineCore.dayTotal (A-010 §1.3 precedence: a date with an
+   * entry is an entries day; `none` only counts on a date with no entries; unlogged = null).
    */
   function buildDays(raw, start, end) {
     var dates = dateList(start, end), byDate = {};
     dates.forEach(function (d) {
       byDate[d] = { date: d, log: null, logged: false, ratings: { anxiety: null, mood: null, energy: null, stress: null },
-        hardToTell: [], tags: [], meals: [], steps: null, stepsOrigin: null, stepsSource: null, sleep: null };
+        hardToTell: [], tags: [], meals: [], steps: null, stepsOrigin: null, stepsSource: null, sleep: null,
+        caffeine: emptyCaffeine() };
     });
     (raw.logs || []).forEach(function (l) {
       var day = l && byDate[l.date];
@@ -158,16 +171,66 @@
       var n = normalizeSleepRow(r);
       if (n && byDate[n.date]) byDate[n.date].sleep = n;
     });
-    return { start: start, end: end, dates: dates, byDate: byDate };
+    var plan = raw.caffeinePlan || null;
+    addCaffeine(byDate, dates, raw.caffeine, raw.caffeineDays, plan);
+    return { start: start, end: end, dates: dates, byDate: byDate, caffeinePlan: plan };
   }
 
-  /** Series { date: number } for a metric: 'sleepH' | 'steps' | rating key. Missing dates absent. */
+  function emptyCaffeine() {
+    return { logged: false, mg: null, none: false, headache: false, tired: false, count: 0, entries: [], target: null };
+  }
+  function byTime(a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; }
+  /**
+   * Fill day.caffeine for every date. Needs HT.caffeineCore (dayTotal, targetOn); without it
+   * every day stays "not logged", so the card shows its empty state and P13/P14 stay hidden.
+   */
+  function addCaffeine(byDate, dates, entries, marks, plan) {
+    var core = HT.caffeineCore;
+    if (!core || typeof core.dayTotal !== 'function') return;
+    var list = {}, mark = {};
+    (entries || []).forEach(function (e) {
+      if (e && byDate[e.date] && isNum(e.mg)) (list[e.date] = list[e.date] || []).push(e);
+    });
+    (marks || []).forEach(function (m) { if (m && byDate[m.date]) mark[m.date] = m; });
+    dates.forEach(function (d) {
+      var es = (list[d] || []).sort(byTime);
+      var t = core.dayTotal(es, mark[d]);
+      byDate[d].caffeine = { logged: t.logged, mg: t.mg, none: t.none, headache: t.headache, tired: t.tired,
+        count: t.count, entries: es, target: plan && typeof core.targetOn === 'function' ? core.targetOn(plan, d) : null };
+    });
+  }
+
+  /**
+   * Late-caffeine flag per evening E (A-010 §8 P13, D6): present only on caffeine-logged dates;
+   * 1 if any entry with mg > 0 (on E, or on E+1 inside E's window) has lateEvening = E, else 0.
+   * Uses the CURRENT bedtime and cut-off for every day (A-010 §5). Returns { date: 0|1 }.
+   */
+  function lateFlags(days, bedtime, cutoffHours) {
+    var core = HT.caffeineCore, out = {}, late = {};
+    if (!core || typeof core.lateEvening !== 'function') return out;
+    var hours = isNum(cutoffHours) ? cutoffHours : 8;
+    days.dates.forEach(function (d) {
+      days.byDate[d].caffeine.entries.forEach(function (e) {
+        if (!(e.mg > 0)) return;
+        var ev = core.lateEvening(e.date, e.time, bedtime, hours);
+        if (ev) late[ev] = true;
+      });
+    });
+    days.dates.forEach(function (d) { if (days.byDate[d].caffeine.logged) out[d] = late[d] ? 1 : 0; });
+    return out;
+  }
+
+  /**
+   * Series { date: number } for a metric: 'sleepH' | 'steps' | 'caffeineMg' | rating key.
+   * Missing dates absent. caffeineMg: logged days only; a "No caffeine" day is a real 0.
+   */
   function series(days, metric) {
     var out = {};
     days.dates.forEach(function (d) {
       var day = days.byDate[d], v = null;
       if (metric === 'sleepH') v = day.sleep && day.sleep.usable ? day.sleep.asleepH : null;
       else if (metric === 'steps') v = day.steps;
+      else if (metric === 'caffeineMg') v = day.caffeine && day.caffeine.logged ? day.caffeine.mg : null;
       else v = day.ratings[metric];
       if (isNum(v)) out[d] = v;
     });
@@ -261,13 +324,20 @@
     if (injected && typeof injected.load === 'function') return Promise.resolve(injected.load(start, end));
     if (!HT.db) return Promise.reject(new Error('no db'));
     var hasApi = !!(HT.healthData && typeof HT.healthData.getDays === 'function');
+    // Caffeine reads (schema 4, A-010 §7) must never break the older charts: a failure just
+    // means "no caffeine logged".
+    function soft(fn, fallback) { return Promise.resolve().then(fn).catch(function () { return fallback; }); }
     return Promise.all([
       rangeGetAll('dailyLog', null, start, end),
       rangeGetAll('meals', 'date', start, end),
-      hasApi ? Promise.resolve(HT.healthData.getDays({ from: start, to: end })).catch(function () { return []; }) : []
+      hasApi ? Promise.resolve(HT.healthData.getDays({ from: start, to: end })).catch(function () { return []; }) : [],
+      soft(function () { return rangeGetAll('caffeine', 'date', start, end); }, []),
+      soft(function () { return rangeGetAll('caffeineDays', null, start, end); }, []),
+      soft(function () { return typeof HT.db.getCaffeinePlan === 'function' ? HT.db.getCaffeinePlan() : null; }, null)
     ]).then(function (r) {
       var h = fromHealthDays(r[2]);
-      return { logs: r[0] || [], meals: r[1] || [], steps: h.steps, sleep: h.sleep, sleepProvider: hasApi };
+      return { logs: r[0] || [], meals: r[1] || [], steps: h.steps, sleep: h.sleep, sleepProvider: hasApi,
+        caffeine: r[3] || [], caffeineDays: r[4] || [], caffeinePlan: r[5] || null };
     });
   }
 
@@ -322,9 +392,13 @@
   /**
    * Draw a one-series chart as inline SVG.
    * opts: { dates[], values{date:n}, type 'bar'|'line', yMax, yTicks[], fmtTick(n),
-   *         partial{date:true}, refLine {value, label}, title, desc, width }
+   *         partial{date:true}, refLine {value, label}, title, desc, width,
+   *         extraGrid [{value, label}], stepLine {date: value} }
    * Missing dates are gaps (no bar; the line breaks). A real 0 bar gets a 2px stub so it is
    * visibly different from missing.
+   * extraGrid: extra neutral gridlines (class chart-grid, solid) with a chart-tick label, e.g. the
+   * caffeine 400 mg reference (A-010 §7). stepLine: a dashed (chart-ref) step path, one flat
+   * segment per date across its slot; it breaks on dates with no value (A-010 §7 target line).
    */
   function drawChart(opts) {
     var W = Math.max(260, Math.floor(opts.width || 600)), H = 190;
@@ -347,6 +421,9 @@
     (opts.yTicks || [0, yMax]).forEach(function (t) {
       svg.appendChild(s('line', { x1: ml, x2: W - mr, y1: y(t), y2: y(t), class: 'chart-grid' }));
       svg.appendChild(s('text', { x: ml - 6, y: y(t) + 4, 'text-anchor': 'end', class: 'chart-tick' }, opts.fmtTick ? opts.fmtTick(t) : t));
+    });
+    (opts.extraGrid || []).forEach(function (gl) {
+      svg.appendChild(s('line', { x1: ml, x2: W - mr, y1: y(gl.value), y2: y(gl.value), class: 'chart-grid chart-grid-extra' }));
     });
     // x labels: first, middle, last
     var idx = n <= 1 ? [0] : n <= 7 ? opts.dates.map(function (d, i) { return i; }) : [0, Math.floor((n - 1) / 2), n - 1];
@@ -385,6 +462,27 @@
       });
     }
     svg.appendChild(g);
+    // Extra gridline labels go above the bars so a tall bar never hides them; the label sits
+    // just under the line when the line is at the very top of the plot.
+    (opts.extraGrid || []).forEach(function (gl) {
+      var gy = y(gl.value), ty = gy - 4 < mt + 10 ? gy + 14 : gy - 4;
+      svg.appendChild(s('text', { x: W - mr - 2, y: ty, 'text-anchor': 'end', class: 'chart-tick chart-grid-label' }, gl.label));
+    });
+    if (opts.stepLine) {
+      var sp = '', pen2 = false;
+      opts.dates.forEach(function (d, i) {
+        var v = opts.stepLine[d];
+        if (!isNum(v)) { pen2 = false; return; }                    // no target that day → break
+        var yy = y(v).toFixed(1), x0 = (ml + step * i).toFixed(1), x1 = (ml + step * (i + 1)).toFixed(1);
+        sp += (pen2 ? 'L' : 'M') + x0 + ' ' + yy + ' L' + x1 + ' ' + yy + ' ';   // L from the previous day = the step
+        pen2 = true;
+      });
+      if (sp) {
+        // B-008: a surface-coloured halo under the dashes keeps the target readable over bars.
+        svg.appendChild(s('path', { d: sp, class: 'chart-step-halo', fill: 'none', 'aria-hidden': 'true' }));
+        svg.appendChild(s('path', { d: sp, class: 'chart-ref chart-step', fill: 'none' }));
+      }
+    }
     if (opts.refLine) {
       var ry = y(opts.refLine.value);
       svg.appendChild(s('line', { x1: ml, x2: W - mr, y1: ry, y2: ry, class: 'chart-ref' }));
@@ -406,8 +504,10 @@
 
   function chartCard(o) {
     var headId = 'tr-' + o.key + '-h';
-    var sec = el('section', { class: 'card chart-card', 'aria-labelledby': headId }, [
-      el('h2', { id: headId, text: o.heading }),
+    // B-008: one colour per measure (css/app.css --c-*), the same as History and Today. The dot
+    // is decoration; the heading names the measure.
+    var sec = el('section', { class: 'card chart-card metric m-' + o.key, 'aria-labelledby': headId }, [
+      el('h2', { id: headId }, [el('span', { class: 'metric-dot', 'aria-hidden': 'true' }), el('span', { text: o.heading })]),
       o.sub ? el('p', { class: 'small muted', text: o.sub }) : null,
       el('p', { class: 'chart-summary', text: o.summary })
     ]);
@@ -499,6 +599,62 @@
     return chartCard(o);
   }
 
+  /** Caffeine period stats: describe() of logged days + the number of "No caffeine" days. */
+  function caffeineStats(days) {
+    var st = describe(series(days, 'caffeineMg'));
+    st.none = 0;
+    days.dates.forEach(function (d) { if (days.byDate[d].caffeine.none) st.none++; });
+    return st;
+  }
+  /** A-010 §7 summary sentence (exact template; plural forms added for n or k = 1). */
+  function caffeineSummaryText(days) {
+    var st = caffeineStats(days);
+    if (!st.n) return 'No caffeine logged in these ' + days.dates.length + ' days.';
+    return 'About ' + fmtInt(st.mean) + ' mg a day over ' + st.n + ' day' + (st.n === 1 ? '' : 's') + ' logged. Lowest ' +
+      fmtInt(st.min) + ', highest ' + fmtInt(st.max) + '.' +
+      (st.none ? ' ' + st.none + ' day' + (st.none === 1 ? '' : 's') + ' marked no caffeine (counted as 0).' : '');
+  }
+  /** Rows for the caffeine table: Date, About mg, Target that day, Note (newest first). */
+  function caffeineRows(days) {
+    return days.dates.slice().reverse().map(function (d) {
+      var c = days.byDate[d].caffeine;
+      return [longDate(d), c.logged ? fmtInt(c.mg) : '', isNum(c.target) ? fmtInt(c.target) + ' mg' : '',
+        c.none ? 'No caffeine marked' : c.logged ? '' : 'Not logged'];
+    });
+  }
+
+  function caffeineCard(days, width) {
+    var vals = series(days, 'caffeineMg'), st = caffeineStats(days), summary = caffeineSummaryText(days);
+    var o = { key: 'caffeine', heading: 'Caffeine (about mg per day)', summary: summary };
+    if (!st.n) { o.empty = 'Caffeine you log on the Today screen will appear here.'; return chartCard(o); }
+    var targets = {}, anyT = false, maxT = 0;
+    days.dates.forEach(function (d) {
+      var t = days.byDate[d].caffeine.target;
+      if (isNum(t)) { targets[d] = t; anyT = true; if (t > maxT) maxT = t; }
+    });
+    var yMax = niceMax(Math.max(st.max, maxT, CAF_REF_MG));
+    // No unlabelled gridline at 200 mg: only the labelled 400 mg line is a reference (A-010 §7).
+    var ticks = [0, yMax / 2, yMax].filter(function (t) { return t !== 200; });
+    o.svg = drawChart({ dates: days.dates, values: vals, type: 'bar', yMax: yMax, yTicks: ticks,
+      fmtTick: function (v) { return fmtInt(v); }, width: width,
+      extraGrid: [{ value: CAF_REF_MG, label: '400 mg reference' }],
+      stepLine: anyT ? targets : null,
+      title: 'Caffeine, about mg per day, ' + shortDate(days.start) + ' to ' + shortDate(days.end),
+      desc: summary + ' A thin line marks 400 mg, a general reference amount.' +
+        (anyT ? ' A dashed line shows your own target.' : '') + ' Gaps are days not logged. A short bar at 0 is a day marked no caffeine.' });
+    o.legend = el('ul', { class: 'chart-legend' }, [
+      legendItem('sw-bar', 'About mg that day'),
+      legendItem('sw-grid', '400 mg reference line'),
+      anyT ? legendItem('sw-ref', 'Your target') : null,
+      el('li', { text: 'Gap = not logged' }),
+      el('li', { text: 'Short bar at 0 = no caffeine marked' })
+    ]);
+    var core = HT.caffeineCore;
+    o.notes = [core && core.TEXT && core.TEXT.W11, CAF_ESTIMATE_NOTE].filter(Boolean);
+    o.table = dataTable('Caffeine by date', ['Date', 'About mg', 'Target that day', 'Note'], caffeineRows(days));
+    return chartCard(o);
+  }
+
   function ratingCard(days, key, width) {
     var info = RATING_INFO[key], vals = series(days, key), st = describe(vals), htt = hardToTellCount(days, key);
     var summary = st.n ? 'Average ' + fmt1(st.mean) + ' over ' + st.n + ' day' + (st.n === 1 ? '' : 's') + ' rated. Lowest ' + st.min + ', highest ' + st.max + '.'
@@ -581,6 +737,7 @@
       var w = width(); lastWidth = w;
       charts.appendChild(sleepCard(days, w));
       charts.appendChild(stepsCard(days, w));
+      charts.appendChild(caffeineCard(days, w));
       RATINGS.forEach(function (k) { charts.appendChild(ratingCard(days, k, w)); });
     }
 
@@ -655,12 +812,18 @@
       dateList: dateList,
       addDays: addDays,
       fromHealthDays: fromHealthDays,
+      lateFlags: lateFlags,
+      caffeineStats: caffeineStats,
+      caffeineSummaryText: caffeineSummaryText,
+      caffeineRows: caffeineRows,
       loadRaw: loadRaw,
       loadDays: loadDays,
       /** Tests/demo only: inject { load(start, end) -> raw }. Pass null to restore IndexedDB. */
       setSource: function (src) { injected = src || null; }
     },
     _drawChart: drawChart,
+    _caffeineCard: caffeineCard,
+    CAF_REF_MG: CAF_REF_MG,
     _niceMax: niceMax
   };
 })(window.HT = window.HT || {});

@@ -5,23 +5,23 @@
  * line is dashed AND labelled, and every chart has a text summary and a data table.
  */
 :root {
-  --chart-bar: #1d4ed8;        /* same as --accent in light: 6.7:1 on white */
-  --chart-line: #1d4ed8;
-  --chart-grid: #d1d5db;
-  --chart-axis: #6b7280;
-  --chart-tick: #374151;
-  --chart-ref: #374151;
-  --chart-hatch-bg: #ffffff;
+  --chart-bar: #9a4b3d;        /* same as --accent in light: 6.0:1 on --bg */
+  --chart-line: #9a4b3d;
+  --chart-grid: #e2cfc0;
+  --chart-axis: #8f7466;
+  --chart-tick: #5c4640;
+  --chart-ref: #5c4640;
+  --chart-hatch-bg: #f4e9df;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --chart-bar: #93c5fd;
-    --chart-line: #93c5fd;
-    --chart-grid: #374151;
-    --chart-axis: #9ca3af;
-    --chart-tick: #d1d5db;
-    --chart-ref: #e5e7eb;
-    --chart-hatch-bg: #161b26;
+    --chart-bar: #eaa99a;
+    --chart-line: #eaa99a;
+    --chart-grid: #43342d;
+    --chart-axis: #a8907f;
+    --chart-tick: #dcc9bb;
+    --chart-ref: #eadbd0;
+    --chart-hatch-bg: #2a201c;
   }
 }
 
@@ -47,10 +47,28 @@
 .chart-dot { fill: var(--chart-line); }
 .chart-ref { stroke: var(--chart-ref); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .chart-ref-label { fill: var(--chart-ref); font-size: 12px; font-weight: 600; font-family: inherit; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+/* Caffeine (A-010 §7, U-1): the 400 mg reference is an ordinary neutral gridline (solid, grey,
+   no colour meaning); its label keeps a halo so bars never hide it. The target is a dashed
+   step line (.chart-ref) and must never be filled. */
+.chart-grid-label { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.chart-step { fill: none; }
+/* B-008: a continuous halo under the dashed target line, so the dashes stay readable where
+   they cross a bar in the caffeine colour (light and dark). */
+.chart-step-halo { fill: none; stroke: var(--surface); stroke-width: 5; stroke-linejoin: round; }
+
+/* B-008: each chart card is drawn in its measure's colour (tokens in app.css: --c-anxiety,
+   --c-mood, --c-energy, --c-stress, --c-caffeine, --c-sleep, --c-steps), the same colour as the
+   History dots and the Today card. The heading dot and the table caption stripe repeat it;
+   the heading, legend text and table caption always name the measure (not colour alone).
+   The 400 mg gridline keeps the neutral --chart-grid (A-010 §7) and the target/reference lines
+   keep the neutral --chart-ref. */
+.chart-card.metric { --chart-bar: var(--metric); --chart-line: var(--metric); }
+.chart-card.metric > h2 { display: flex; align-items: center; gap: 8px; }
+.chart-card.metric .data-table caption { border-left: 4px solid var(--metric); padding-left: 8px; }
 
 .chart-legend { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 0.88rem; color: var(--muted); }
 .chart-legend li { display: inline-flex; align-items: center; gap: 6px; }
-.swatch { display: inline-block; width: 16px; height: 12px; border-radius: 2px; flex: 0 0 auto; }
+.swatch { display: inline-block; width: 16px; height: 14px; border-radius: 4px; flex: 0 0 auto; }
 .sw-bar { background: var(--chart-bar); }
 .sw-partial {
   border: 1.5px dashed var(--chart-bar);
@@ -58,6 +76,7 @@
 }
 .sw-ref { height: 0; border-top: 2px dashed var(--chart-ref); border-radius: 0; }
 .sw-line { height: 0; border-top: 3px solid var(--chart-line); border-radius: 0; }
+.sw-grid { height: 0; border-top: 2px solid var(--chart-grid); border-radius: 0; }
 
 /* ---------- data tables ---------- */
 .chart-data summary { cursor: pointer; min-height: var(--tap, 44px); display: flex; align-items: center; font-weight: 600; color: var(--accent); }
@@ -81,7 +100,7 @@
 
 /* ---------- print (doctor summary) ---------- */
 @media print {
-  :root, :root * { --chart-bar: #000; --chart-line: #000; }
+  :root, :root *, .chart-card.metric { --chart-bar: #000; --chart-line: #000; }
   html.printing-summary .app-header,
   html.printing-summary .tabbar,
   html.printing-summary .trends,

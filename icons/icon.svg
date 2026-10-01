@@ -1,6 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Health Log">
-  <rect width="512" height="512" rx="112" fill="#1d4ed8"/>
-  <rect x="136" y="112" width="240" height="296" rx="28" fill="#ffffff"/>
-  <rect x="200" y="88" width="112" height="56" rx="16" fill="#dbeafe" stroke="#1d4ed8" stroke-width="12"/>
-  <path d="M172 272h44l24-56 32 104 24-48h44" fill="none" stroke="#1d4ed8" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- B-008: boho rainbow arch with a sage leaf (theme palette). The PNG icons are drawn from
+       this same geometry (see docs/team/builds/B-008-theme-polish.md). -->
+  <rect width="512" height="512" rx="112" fill="#fbf6f0"/>
+  <g fill="none" stroke-width="40">
+    <path d="M76 344a180 180 0 0 1 360 0" stroke="#9a4b3d"/>
+    <path d="M120 344a136 136 0 0 1 272 0" stroke="#d19a45"/>
+    <path d="M164 344a92 92 0 0 1 184 0" stroke="#d69680"/>
+  </g>
+  <path d="M76 368H436" stroke="#6f8a63" stroke-width="12" stroke-linecap="round"/>
+  <g transform="rotate(-15 256 360)">
+    <path d="M256 360C210 330 208 280 256 248C304 280 302 330 256 360Z" fill="#4a6642" stroke="#fbf6f0" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M256 352V266" stroke="#fbf6f0" stroke-width="6" stroke-linecap="round"/>
+  </g>
 </svg>

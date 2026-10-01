@@ -410,9 +410,17 @@
     return !!t && t.isConnected && !t.disabled && !t.hidden && !(t.closest && t.closest('[hidden]'));
   }
   /** Focus [data-fk=key] inside root, else the fallback element; does nothing when neither is usable. */
+  /** B-008: open a closed Settings fold around node (HT.app.reveal), so it can take focus. */
+  function reveal(node) {
+    if (node && HT.app && typeof HT.app.reveal === 'function') HT.app.reveal(node);
+  }
   function focusKey(root, key, fallback) {
+    // B-008: the Settings card sits in a folding section; open it first if it was closed,
+    // so focus never goes to a hidden element.
     var t = key ? root.querySelector('[data-fk="' + key + '"]') : null;
+    if (t) reveal(t);
     if (!usable(t)) t = fallback || null;
+    if (t) reveal(t);
     if (usable(t)) { try { t.focus(); } catch (e) { /* ignore */ } }
   }
   function onEscape(node, fn) {
@@ -519,7 +527,7 @@
         saving = false;
         submitBtn.disabled = false;
         saveError(e);
-        submitBtn.focus();
+        focusKey(null, null, submitBtn);   // B-008: via focusKey, so a closed Settings fold opens first
       });
     });
     form.appendChild(el('p', { class: 'caf-status', text: 'Your usual amount: about ' + K.fmtInt(sum.avg) + ' mg a day (from ' + sum.n + ' days).' }));
@@ -924,7 +932,7 @@
                 HT.db.deleteCaffeineDrink(d.id).then(function () {
                   status('Deleted', 'ok');
                   // T006-01: the list is rebuilt, so focus goes to "+ Add a drink" (or the heading when full).
-                  return drawDrinks().then(function () { focusKey(card, null, usable(addDrinkBtn) ? addDrinkBtn : drinkHeading); });
+                  return drawDrinks().then(function () { reveal(addDrinkBtn); focusKey(card, null, usable(addDrinkBtn) ? addDrinkBtn : drinkHeading); });
                 }, saveError);
               } })
             ])
@@ -949,6 +957,7 @@
     function closeDrinkForm() {
       drinkForm.textContent = '';
       addDrinkBtn.hidden = drinks.length >= K.DRINKS_MAX;
+      reveal(addDrinkBtn);   // B-008: open the fold first, so usable() sees the real state
       focusKey(card, null, usable(addDrinkBtn) ? addDrinkBtn : drinkHeading);
     }
     addDrinkBtn.addEventListener('click', function () { openDrinkForm(null); });
@@ -1000,7 +1009,7 @@
       startForm = buildStartForm({ plan: plan, sum: sum,
         onSaved: function () { startForm = null; planRedraw('status'); },
         onCancel: function () { startForm = null; planRedraw('start'); } });
-      planRedraw(null).then(function () { if (startForm) startForm._fields.goal.focus(); });
+      planRedraw(null).then(function () { if (startForm) focusKey(null, null, startForm._fields.goal); });   // B-008: reveals the fold
     }
     /** Save a plan record, then redraw and focus `key` (T006-01). Buttons in planBox are disabled meanwhile. */
     function savePlan(p, key) {

@@ -6,6 +6,10 @@
  * Deliberately NOT shown: any diagnostic or target threshold, range flag, condition name, or
  * "normal/abnormal" label (FDA 2026 General Wellness, A-003 W5; decisions.md 2026-09-23).
  * Partial sleep nights are excluded from sleep averages and counted (R-001 §6.1 step 10).
+ * Caffeine (A-010 §9): a "Daily measures" row (estimates) and a "Caffeine" subsection with the
+ * person's own plan, late-evening count (only if a bedtime is set) and headache/tiredness marks.
+ * NO reference amounts (no 400 or 200 mg), no count of days over any amount, no pregnancy
+ * numbers, and no amber/red or .notice styling (U-1).
  * Printing uses the browser's print dialog; css/charts.css holds the print stylesheet.
  * Classic script. Exposes window.HT.summary = { render(container, {days, onBack}), build }.
  * Never logs health data.
@@ -26,11 +30,72 @@
   /** Same rule as HT.db sanitize / HT.stats: integer 0–720 (A-005 Part 2). */
   function validMinutes(v) { return isNum(v) && Math.floor(v) === v && v >= 0 && v <= 720; }
 
+  function isHHMM(t) { return typeof t === 'string' && /^([01][0-9]|2[0-3]):[0-5][0-9]$/.test(t); }
+  function fmtInt(n) {
+    if (HT.trends && HT.trends.fmt) return HT.trends.fmt.int(n);
+    return String(Math.round(n));
+  }
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
+  /**
+   * Pure: caffeine numbers for the period (A-010 §9).
+   * opts.settings: bedtime / cut-off (default HT.state.settings); opts.plan: the plan record
+   * (default days.caffeinePlan, loaded by HT.trends.data.loadDays).
+   */
+  function buildCaffeine(days, opts) {
+    var D = HT.trends.data, core = HT.caffeineCore;
+    var st = D.caffeineStats(days);
+    var c = { n: st.n, mean: st.mean, min: st.min, max: st.max, none: st.none, headache: 0, tired: 0, late: null, plan: null };
+    days.dates.forEach(function (d) {
+      var x = days.byDate[d].caffeine;
+      if (x.headache) c.headache++;
+      if (x.tired) c.tired++;
+    });
+    var settings = (opts && opts.settings) || (HT.state && HT.state.settings) || {};
+    if (isHHMM(settings.caffeineBedtime)) {
+      var N = typeof settings.caffeineCutoffHours === 'number' ? settings.caffeineCutoffHours : 8;
+      var flags = D.lateFlags(days, settings.caffeineBedtime, N), k = 0, n = 0;
+      Object.keys(flags).forEach(function (d) { n++; if (flags[d] === 1) k++; });
+      c.late = { hours: N, k: k, n: n };
+    }
+    var plan = opts && opts.plan !== undefined ? opts.plan : days.caffeinePlan;
+    // A plan "overlaps" the period if it started on or before the last day and had not ended
+    // before the first day. Baseline-only records have no plan to report.
+    if (plan && (plan.status === 'active' || plan.status === 'done' || plan.status === 'ended') &&
+        typeof plan.startDate === 'string' && plan.startDate <= days.end &&
+        !(plan.status === 'ended' && typeof plan.endDate === 'string' && plan.endDate < days.start)) {
+      c.plan = { goalMg: plan.goalMg, pct: plan.pct,
+        targetOnEnd: core && typeof core.targetOn === 'function' ? core.targetOn(plan, days.end) : null };
+    }
+    return c;
+  }
+
+  /**
+   * Pure: the caffeine row for "Daily measures" and the lines of the "Caffeine" subsection,
+   * exact A-010 §9 templates. endLabel = the period's last day, formatted.
+   */
+  function caffeineText(c, endLabel) {
+    var row = ['Caffeine, about mg per day (estimates)', String(c.n),
+      c.n ? fmtInt(c.mean) : '—',
+      c.n ? fmtInt(c.min) + ' – ' + fmtInt(c.max) : '—',
+      plural(c.none, 'day', 'days') + ' marked no caffeine (counted as 0). Amounts are estimates from food databases and labels.'];
+    var lines = [];
+    if (!c.n) lines.push('No caffeine logged in this period.');
+    if (c.plan) {
+      lines.push('Goal set by the person: ' + fmtInt(c.plan.goalMg) + ' mg a day.' +
+        (typeof c.plan.targetOnEnd === 'number' ? ' Target on ' + endLabel + ': ' + fmtInt(c.plan.targetOnEnd) + ' mg a day.' : '') +
+        ' Weekly step chosen: ' + c.plan.pct + '%.');
+    }
+    if (c.late) lines.push('Evenings with caffeine within ' + c.late.hours + ' hours of the person’s usual bedtime: ' + c.late.k + ' of ' + c.late.n + ' logged.');
+    lines.push('Days marked headache: ' + c.headache + '. Days marked tiredness: ' + c.tired + '.');
+    return { row: row, lines: lines };
+  }
+
   /**
    * Pure: build the summary numbers from merged days (HT.trends.data.buildDays output).
-   * unit = the user's display glucose unit.
+   * unit = the user's display glucose unit. opts: see buildCaffeine.
    */
-  function build(days, unit) {
+  function build(days, unit, opts) {
     var D = HT.trends.data, U = HT.units;
     var out = { start: days.start, end: days.end, totalDays: days.dates.length, unit: unit };
     out.loggedDays = 0;
@@ -70,6 +135,7 @@
       });
     });
     out.glucoseRange = out.glucose.length ? { low: U.formatMgdlIn(lo, unit) + ' ' + unit, high: U.formatMgdlIn(hi, unit) + ' ' + unit } : null;
+    out.caffeine = buildCaffeine(days, opts);
     return out;
   }
 
@@ -129,6 +195,8 @@
         rows.push(row([r[1], String(x.n), x.n ? F.one(x.mean) : '—', x.n ? x.min + ' – ' + x.max : '—',
           x.hardToTell ? x.hardToTell + ' day' + (x.hardToTell === 1 ? '' : 's') + ' “hard to tell” (not counted).' : '']));
       });
+      var caf = caffeineText(s.caffeine, F.longDate(s.end));
+      rows.push(row(caf.row));
       body.appendChild(el('h3', { text: 'Daily measures' }));
       body.appendChild(T.dataTable('Averages over days with data', ['Measure', 'Days with data', 'Average', 'Lowest – highest', 'Notes'], rows));
 
@@ -136,6 +204,10 @@
       body.appendChild(el('h3', { text: 'Things marked on the day' }));
       body.appendChild(T.dataTable('Days each tag was marked (' + s.loggedDays + ' days logged)', ['Tag', 'Days marked'],
         s.tags.map(function (t) { return [t.label, String(t.days)]; })));
+
+      // Caffeine (A-010 §9): plain paragraphs, no reference amounts, no colour.
+      body.appendChild(el('h3', { text: 'Caffeine' }));
+      caf.lines.forEach(function (t) { body.appendChild(el('p', { text: t })); });
 
       // Meals
       body.appendChild(el('h3', { text: 'Meals' }));
@@ -185,5 +257,5 @@
     };
   }
 
-  HT.summary = { render: render, build: build, RATING_ROWS: RATING_ROWS };
+  HT.summary = { render: render, build: build, buildCaffeine: buildCaffeine, caffeineText: caffeineText, RATING_ROWS: RATING_ROWS };
 })(window.HT = window.HT || {});
