@@ -127,7 +127,8 @@
 
   // ---------- folding sections (B-008) ----------
   // Every Settings section is a disclosure: a heading holding a real button with aria-expanded
-  // and aria-controls, and a body that is hidden when closed. All start closed; each section's
+  // and aria-controls, and a body that is hidden when closed. All start closed except Caffeine,
+  // which holds My drinks (user request 2026-10-02: saved drinks must not look gone); each section's
   // open/closed state is remembered in localStorage (HT.app.prefGet/prefSet wrap it in
   // try/catch, so blocked storage just means "closed"). A section's key is fixed, not its title.
   var FOLD_PREF = 'fold.settings.';
@@ -139,7 +140,7 @@
    *   import), move that module's first <h2> up into the fold header (keeping its id), so the
    *   title appears once and the module's own code stays unchanged.
    */
-  function foldCard(key, title, headingId) {
+  function foldCard(key, title, headingId, startOpen) {
     var el = HT.app.el, A = HT.app;
     var bodyId = A.nextId('fold-' + key);
     var titleSpan = el('span', { text: title || '' });
@@ -156,7 +157,8 @@
     btn.addEventListener('click', function () { set(body.hidden, true); });
     // HT.app.reveal(node) calls this when code must focus something inside a closed section.
     body._reveal = function () { set(true, true); };
-    set(A.prefGet(FOLD_PREF + key) === '1', false);
+    var pref = A.prefGet(FOLD_PREF + key);
+    set(pref === '1' || (pref === null && startOpen === true), false);
     return {
       card: card,
       body: body,
@@ -294,7 +296,7 @@
     drawRange();
 
     // ---------- caffeine (owned by js/caffeine-ui.js, A-010 §6) ----------
-    var cafFold = foldCard('caffeine', 'Caffeine', null);
+    var cafFold = foldCard('caffeine', 'Caffeine', null, true);
     var caf = null;
     if (HT.caffeineUI && typeof HT.caffeineUI.renderSettingsCard === 'function') {
       container.appendChild(cafFold.card);
